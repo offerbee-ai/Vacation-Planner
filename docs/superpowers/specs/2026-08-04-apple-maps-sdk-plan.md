@@ -186,6 +186,44 @@ call presented the access token rather than a freshly signed auth JWT and so
 returned 401. The value is documented as 1800 and the decode is covered by test,
 but it has not been seen on the wire.
 
+### Step 8 follow-up: pagination, probed separately
+
+The first probe called `Search` (one page) and never exercised `SearchAll`, so
+the only real algorithm in the package had synthetic coverage only. Probing it
+against the live API found two further undocumented rules, both of which had
+made `SearchAll` fail on page 2 every time:
+
+6. **`enablePagination` is rejected once a `pageToken` is present.** Apple:
+   `Cannot specify parameter [enablePagination] in search request by pageToken`.
+   The flag opts into pagination and belongs to the first request only.
+
+7. **A page request may carry no other parameter at all.** After fixing 6, Apple
+   returned `Cannot specify parameter [q] in search request by pageToken`. The
+   token encodes the entire original query, so a follow-up page is
+   `GET /v1/search?pageToken=…` and nothing else — no `q`, no `searchLocation`,
+   no `lang`.
+
+Neither rule appears in Apple's documentation. The fix was structural rather than
+documentary: `PageToken` was removed from `SearchRequest` and replaced with a
+`SearchPage(ctx, token)` method, which makes the illegal request
+unrepresentable instead of merely discouraged.
+
+The test double was the deeper problem. It accepted any combination of
+parameters, so it was more permissive than the service it stood in for and could
+not have caught either bug. It now rejects a `pageToken` request carrying
+anything else, with Apple's own message and status. Reverting the fix makes four
+tests fail; before, none did.
+
+Verified live afterwards: a restaurant search near San Francisco walked 3 pages
+for 60 places with no duplicates across pages and `Truncated` correctly set
+against Apple's reported `totalPageCount` of 5. Pages hold 20 results.
+
+One observation for the design's open item on recall: `q=Golden Gate Bridge`
+returned 23 results across 3 pages. Apple treats `searchLocation` as a weak hint
+and returns loosely related places, so precision differs markedly from a Google
+radius search. That reinforces measuring the recall delta before making Apple
+primary.
+
 ## Done when
 
 - `go build ./... && go vet ./... && go test ./applemaps/...` clean.

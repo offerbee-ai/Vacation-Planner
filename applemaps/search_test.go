@@ -101,15 +101,36 @@ func TestSearchRequiresQ(t *testing.T) {
 
 // pagedSearchServer serves numbered pages, handing out a next token until the
 // last one.
-func pagedSearchServer(t *testing.T, totalPages int) (*Client, *atomic.Int64, *[]string) {
+//
+// It enforces Apple's rule that a pageToken request may carry no other
+// parameter, answering a violation with the same HTTP 400 the live API returns.
+//
+// An earlier version of this double accepted anything, which let two real bugs
+// pass the entire suite while failing against Apple on page 2: SearchAll left
+// enablePagination set on every page, and then still sent q. A fake more
+// permissive than the service it stands in for tests nothing — both rules are
+// undocumented and were found only by calling the real API.
+func pagedSearchServer(t *testing.T, totalPages int) (*Client, *atomic.Int64, *[]url.Values) {
 	t.Helper()
 	var calls atomic.Int64
-	tokensSeen := make([]string, 0, totalPages)
+	queriesSeen := make([]url.Values, 0, totalPages)
 
 	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
-		n := int(calls.Add(1))
-		tokensSeen = append(tokensSeen, r.URL.Query().Get("pageToken"))
+		query := r.URL.Query()
+		queriesSeen = append(queriesSeen, query)
 
+		if query.Get("pageToken") != "" {
+			for key := range query {
+				if key == "pageToken" {
+					continue
+				}
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, `{"error":{"message":"Cannot specify parameter [%s] in search request by pageToken","details":[]}}`, key)
+				return
+			}
+		}
+
+		n := int(calls.Add(1))
 		next := ""
 		if n < totalPages {
 			next = fmt.Sprintf("token-%d", n+1)
@@ -120,11 +141,11 @@ func pagedSearchServer(t *testing.T, totalPages int) (*Client, *atomic.Int64, *[
 			"paginationInfo":{"nextPageToken":%q,"totalPageCount":%d,"totalResults":%d}
 		}`, n, next, totalPages, totalPages)
 	})
-	return client, &calls, &tokensSeen
+	return client, &calls, &queriesSeen
 }
 
 func TestSearchAllFollowsPagination(t *testing.T) {
-	client, calls, tokensSeen := pagedSearchServer(t, 3)
+	client, calls, queriesSeen := pagedSearchServer(t, 3)
 
 	result, err := client.SearchAll(context.Background(), SearchRequest{Q: "cafe"}, 10)
 	if err != nil {
@@ -147,12 +168,88 @@ func TestSearchAllFollowsPagination(t *testing.T) {
 	// previous response supplied.
 	want := []string{"", "token-2", "token-3"}
 	for i, w := range want {
-		if (*tokensSeen)[i] != w {
-			t.Errorf("page %d pageToken: got %q, want %q", i+1, (*tokensSeen)[i], w)
+		if got := (*queriesSeen)[i].Get("pageToken"); got != w {
+			t.Errorf("page %d pageToken: got %q, want %q", i+1, got, w)
 		}
 	}
 	if result.DisplayMapRegion == nil || result.DisplayMapRegion.NorthLatitude != 1 {
 		t.Error("displayMapRegion should come from the first page")
+	}
+}
+
+// A page request must be a bare token and nothing else: not q, not
+// enablePagination, not the search location. Sending anything more is an HTTP
+// 400 from Apple, and both restrictions are undocumented.
+func TestSearchAllSendsOnlyThePageTokenAfterTheFirstPage(t *testing.T) {
+	client, _, queriesSeen := pagedSearchServer(t, 3)
+
+	if _, err := client.SearchAll(context.Background(), SearchRequest{
+		Q:              "cafe",
+		SearchLocation: &Location{Latitude: 37.78, Longitude: -122.42},
+		Lang:           "en-US",
+	}, 10); err != nil {
+		t.Fatalf("SearchAll: %v", err)
+	}
+
+	queries := *queriesSeen
+	if len(queries) != 3 {
+		t.Fatalf("requests: got %d, want 3", len(queries))
+	}
+
+	// The first page is a full query and opts into pagination.
+	if got := queries[0].Get("enablePagination"); got != "true" {
+		t.Errorf("page 1 enablePagination: got %q, want true", got)
+	}
+	if got := queries[0].Get("q"); got != "cafe" {
+		t.Errorf("page 1 q: got %q, want cafe", got)
+	}
+	if _, present := queries[0]["pageToken"]; present {
+		t.Error("page 1 must not send a pageToken")
+	}
+
+	// Every later page carries the token alone.
+	for i, query := range queries[1:] {
+		page := i + 2
+		if query.Get("pageToken") == "" {
+			t.Errorf("page %d should send a pageToken", page)
+		}
+		if len(query) != 1 {
+			t.Errorf("page %d sent %v; a page request must carry pageToken alone", page, query)
+		}
+	}
+}
+
+func TestSearchPageSendsOnlyTheToken(t *testing.T) {
+	var gotQuery url.Values
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		fmt.Fprint(w, `{"results":[{"name":"next page place"}]}`)
+	})
+	// A client-wide default language must not leak into a page request either.
+	client.lang = "en-US"
+
+	resp, err := client.SearchPage(context.Background(), "tok-abc")
+	if err != nil {
+		t.Fatalf("SearchPage: %v", err)
+	}
+
+	if got := gotQuery.Get("pageToken"); got != "tok-abc" {
+		t.Errorf("pageToken: got %q", got)
+	}
+	if len(gotQuery) != 1 {
+		t.Errorf("sent %v; want pageToken alone", gotQuery)
+	}
+	if len(resp.Results) != 1 || resp.Results[0].Name != "next page place" {
+		t.Errorf("results: got %+v", resp.Results)
+	}
+}
+
+func TestSearchPageRequiresToken(t *testing.T) {
+	client, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("no request should be sent without a token")
+	})
+	if _, err := client.SearchPage(context.Background(), ""); err == nil {
+		t.Error("want an error for an empty page token")
 	}
 }
 

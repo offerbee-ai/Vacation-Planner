@@ -52,11 +52,17 @@ type SearchRequest struct {
 	UserLocation *Location
 	// SearchRegionPriority indicates how strongly to weight SearchRegion.
 	SearchRegionPriority string
-	// EnablePagination asks Apple to return paginated results. SearchAll sets
-	// this itself.
+	// EnablePagination asks Apple to return paginated results, populating
+	// SearchResponse.PaginationInfo. It belongs on the first request of a
+	// sequence only; subsequent pages are fetched with SearchPage.
 	EnablePagination bool
-	// PageToken requests a specific page. SearchAll manages this itself.
-	PageToken string
+}
+
+func (r SearchRequest) validate() error {
+	if r.Q == "" {
+		return errors.New("applemaps: Search requires Q")
+	}
+	return nil
 }
 
 func (r SearchRequest) params(c *Client) url.Values {
@@ -92,9 +98,6 @@ func (r SearchRequest) params(c *Client) url.Values {
 	if r.EnablePagination {
 		params.Set("enablePagination", "true")
 	}
-	if r.PageToken != "" {
-		params.Set("pageToken", r.PageToken)
-	}
 	return params
 }
 
@@ -115,12 +118,37 @@ func setAddressCategories(params url.Values, key string, categories []AddressCat
 // kind that genuinely do not exist nearby is a valid, informative answer, and
 // callers scanning an area need to distinguish it from a failure.
 func (c *Client) Search(ctx context.Context, req SearchRequest) (*SearchResponse, error) {
-	if req.Q == "" {
-		return nil, errors.New("applemaps: Search requires Q")
+	if err := req.validate(); err != nil {
+		return nil, err
 	}
 
 	var resp SearchResponse
 	if err := c.get(ctx, searchPath, req.params(c), &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// SearchPage fetches a subsequent page of a paginated search using a token from
+// a previous response's PaginationInfo.NextPageToken.
+//
+// It deliberately takes nothing but the token. Apple rejects a page request
+// carrying any other parameter — "Cannot specify parameter [q] in search request
+// by pageToken", and likewise for enablePagination — because the token already
+// encodes the original query. Neither restriction is documented; both were found
+// by calling the live API. Expressing pagination as its own method rather than a
+// field on SearchRequest makes the illegal request unrepresentable instead of
+// merely discouraged.
+func (c *Client) SearchPage(ctx context.Context, pageToken string) (*SearchResponse, error) {
+	if pageToken == "" {
+		return nil, errors.New("applemaps: SearchPage requires a page token")
+	}
+
+	params := url.Values{}
+	params.Set("pageToken", pageToken)
+
+	var resp SearchResponse
+	if err := c.get(ctx, searchPath, params, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -147,6 +175,9 @@ type SearchAllResult struct {
 // function owns pagination and nothing else — it applies no distance filter and
 // no ranking, because Apple offers no radius parameter and any such policy
 // belongs to the caller rather than to a transport client.
+//
+// The first page is a full query; every later page is a bare token request via
+// SearchPage, because Apple accepts no other parameter alongside a page token.
 func (c *Client) SearchAll(ctx context.Context, req SearchRequest, maxPages int) (*SearchAllResult, error) {
 	if req.Q == "" {
 		return nil, errors.New("applemaps: SearchAll requires Q")
@@ -157,9 +188,16 @@ func (c *Client) SearchAll(ctx context.Context, req SearchRequest, maxPages int)
 
 	req.EnablePagination = true
 	result := &SearchAllResult{}
+	nextToken := ""
 
 	for {
-		page, err := c.Search(ctx, req)
+		var page *SearchResponse
+		var err error
+		if nextToken == "" {
+			page, err = c.Search(ctx, req)
+		} else {
+			page, err = c.SearchPage(ctx, nextToken)
+		}
 		if err != nil {
 			// A failure partway through still returns what was gathered, so a
 			// caller can decide between using a partial result and discarding
@@ -176,18 +214,17 @@ func (c *Client) SearchAll(ctx context.Context, req SearchRequest, maxPages int)
 			result.DisplayMapRegion = page.DisplayMapRegion
 		}
 
-		next := ""
+		nextToken = ""
 		if page.PaginationInfo != nil {
-			next = page.PaginationInfo.NextPageToken
+			nextToken = page.PaginationInfo.NextPageToken
 		}
-		if next == "" {
+		if nextToken == "" {
 			return result, nil
 		}
 		if result.Pages >= maxPages {
 			result.Truncated = true
 			return result, nil
 		}
-		req.PageToken = next
 	}
 }
 

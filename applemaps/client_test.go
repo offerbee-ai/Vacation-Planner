@@ -225,6 +225,63 @@ func TestMaxRetriesDisabled(t *testing.T) {
 	}
 }
 
+// The backoff schedule itself was previously only stubbed out, never asserted.
+func TestBackoffDelaysDouble(t *testing.T) {
+	var delays []time.Duration
+	client, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	client.sleep = func(_ context.Context, d time.Duration) error {
+		delays = append(delays, d)
+		return nil
+	}
+
+	if err := client.get(context.Background(), "/v1/thing", nil, nil); err == nil {
+		t.Fatal("want an error")
+	}
+
+	// Two retries after the initial attempt, so two sleeps: 200ms then 400ms.
+	want := []time.Duration{retryBaseDelay, 2 * retryBaseDelay}
+	if len(delays) != len(want) {
+		t.Fatalf("sleeps: got %v, want %v", delays, want)
+	}
+	for i := range want {
+		if delays[i] != want[i] {
+			t.Errorf("sleep %d: got %v, want %v", i+1, delays[i], want[i])
+		}
+	}
+}
+
+func TestSleepContext(t *testing.T) {
+	t.Run("returns after the delay elapses", func(t *testing.T) {
+		start := time.Now()
+		if err := sleepContext(context.Background(), 20*time.Millisecond); err != nil {
+			t.Fatalf("sleepContext: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed < 20*time.Millisecond {
+			t.Errorf("returned after %v, want at least 20ms", elapsed)
+		}
+	})
+
+	t.Run("aborts when the context is cancelled mid-sleep", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			cancel()
+		}()
+
+		start := time.Now()
+		err := sleepContext(ctx, 30*time.Second)
+		if err == nil {
+			t.Fatal("want an error when the context is cancelled")
+		}
+		// The point is that a cancelled request does not sit out a long backoff.
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("waited %v before returning; cancellation should be immediate", elapsed)
+		}
+	})
+}
+
 func TestGetHonoursContextCancellationDuringBackoff(t *testing.T) {
 	client, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
