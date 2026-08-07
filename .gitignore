@@ -1,5 +1,10 @@
 .env
 .docker_build/
+
+# Apple Maps private keys. Apple allows exactly one download of a .p8 and
+# offers no way to retrieve it again, so a leak means revoking the key.
+*.p8
+
 vendor
 bin/
 .idea

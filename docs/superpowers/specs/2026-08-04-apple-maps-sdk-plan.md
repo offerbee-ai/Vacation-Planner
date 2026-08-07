@@ -1,0 +1,154 @@
+# Apple Maps SDK — Phase 1 Implementation Plan
+
+Design: [2026-08-04-apple-maps-sdk-design.md](2026-08-04-apple-maps-sdk-design.md).
+Section references below point there; no design decisions are restated or
+re-opened in this document.
+
+Scope: the `applemaps/` package only. Nothing outside the new directory changes
+except `.gitignore` and `go.mod`. Phase 2 (adapter, category map, fallback
+routing, quota counter, config wiring) is a separate plan.
+
+Every step is test-first and independently verifiable. `go build ./... && go vet
+./... && go test ./applemaps/...` must pass at the end of each step.
+
+## Step 0 — Guard the key, scaffold the package
+
+- Add `*.p8` to `.gitignore` **before any other file lands**.
+- `mkdir applemaps`, add `doc.go` with the package comment.
+
+Verify: `git check-ignore -v test.p8` resolves to the new rule.
+
+## Step 1 — `types.go`
+
+All 22 objects and 5 enums from spec § "What Apple actually returns" and
+§ "Endpoints". No behaviour, pure declarations.
+
+Enum constants: `PoiCategory` (77 values, own file `poicategory.go`),
+`SearchResultType`, `SearchACResultType`, `AddressCategory`, `DirectionsAvoid`.
+
+`TransportType` is a string type with constants `Automobile`, `Walking`,
+`Transit`, carrying a comment that Apple's documentation truncates the valid set
+mid-sentence and that Step 8 confirms it empirically.
+
+Every field is a pointer or has an explicit `omitempty` decision: Apple marks
+every response field optional, so a zero value must stay distinguishable from an
+absent one wherever a caller could misread it — notably `Eta.distanceMeters` and
+`Route.hasTolls`, where `0` and `false` are meaningful values.
+
+Verify: compiles; a round-trip test decodes the documented example payloads for
+`SearchResponse`, `PlaceResults`, and `TokenResponse` without loss.
+
+## Step 2 — `auth.go`
+
+Per spec § "Authentication". Tests first, all against `httptest.Server`.
+
+Tests:
+
+1. Auth JWT carries `alg: ES256`, `kid`, `typ: JWT` in the header and
+   `iss`/`iat`/`exp` in the claims; signature verifies against the public key.
+2. Exchange returns the access token and stores expiry from
+   `expiresInSeconds`.
+3. A second call inside the validity window performs no HTTP request.
+4. A call with under 5 minutes remaining triggers exactly one refresh.
+5. 50 goroutines racing a cold `TokenSource` produce exactly one exchange
+   (assert on a request counter).
+6. `401` on exchange surfaces as an auth error, not a retry loop.
+7. Key parsing accepts the real PKCS#8 PEM shape; a malformed PEM errors
+   without panicking.
+
+Signing tests generate their own P-256 key via `ecdsa.GenerateKey`. No fixture
+ever contains a real key.
+
+## Step 3 — `client.go`
+
+`Client`, `Options`, and the shared request path.
+
+Tests:
+
+1. Query encoding: comma-joined lists for the `*PoiCategories` and
+   `limitToCountries` params; `lat,lng` formatting for `searchLocation`,
+   `userLocation`, and `loc`; the 4-value `searchRegion` ordering
+   (north, east, south, west) exactly as spec § "Endpoints" states.
+2. `Authorization: Bearer <accessToken>` is set from the `TokenSource`.
+3. `401` invalidates the token and retries once; a second `401` returns.
+   Assert the retry actually re-exchanged.
+4. `429` decodes to a distinct `QuotaError` — callers must be able to tell quota
+   exhaustion from every other failure, since spec § "Quota guard" routes on it.
+5. `5xx` retries with backoff up to a cap, then returns the last error.
+6. `ErrorResponse` body is decoded into the returned error's message and
+   details; a non-JSON error body still yields a useful error.
+7. Context cancellation aborts in flight.
+
+## Step 4 — `geocode.go`
+
+`Geocode(ctx, GeocodeRequest)` and `ReverseGeocode(ctx, lat, lng, opts)`.
+
+Tests: param encoding for both; `PlaceResults` decode; empty `results` returns a
+typed not-found error rather than a zero `Place`.
+
+## Step 5 — `search.go`
+
+`Search`, `SearchAll`, `SearchAutocomplete`.
+
+`SearchAll` owns pagination only — it sets `enablePagination`, follows
+`nextPageToken`, and stops on an absent token or at the caller's page cap. The
+radius filtering and page cap described in spec § "Adapter onto the existing
+seam" belong to Phase 2's adapter, not here; this package stays free of
+`POI` concepts.
+
+Tests: single page; three pages followed via `nextPageToken`; termination on
+absent token; page cap honoured and reported; `poiCategory` survives decode on
+`SearchResponse.Place`.
+
+## Step 6 — `place.go`
+
+`Place(ctx, id, opts)`, `Places(ctx, ids, opts)`, `AlternateIDs(ctx, ids)`.
+
+Tests: path escaping for an id containing reserved characters; `ids` comma
+joining; partial success — `PlacesResponse` carrying both `results` and `errors`
+must surface both, never silently drop the errors.
+
+## Step 7 — `directions.go`
+
+`Directions` and `ETAs`.
+
+`DirectionsResponse` arrives flattened with index pointers:
+`routes[].stepIndexes` index into top-level `steps[]`, and each
+`steps[].stepPathIndex` indexes into top-level `stepPaths[]`. Expose a resolver
+that walks a route into its steps and paths.
+
+Tests, and the reason this step is last:
+
+1. A well-formed multi-route response resolves to the right steps and paths.
+2. **Out-of-range `stepIndexes` returns an error and does not panic.**
+3. **Out-of-range `stepPathIndex` returns an error and does not panic.**
+4. `destinations` pipe-joining for `/v1/etas`.
+5. `departureDate`/`arrivalDate` ISO 8601 UTC formatting; setting both is
+   rejected locally, since spec § "Endpoints" records that Apple accepts only
+   one.
+
+Unchecked indexing here panics the server process on a malformed upstream
+response. Bounds checks are the point of this step, not an afterthought.
+
+## Step 8 — Live probe
+
+Against the real API using `~/.config/applemaps/AuthKey_FUTFWSCQA4.p8`, a
+throwaway `main` under `/private/tmp`, never committed:
+
+1. `/v1/token` — confirm the exchange and observed `expiresInSeconds`.
+2. One call per endpoint; save responses as `testdata/` fixtures.
+3. `/v1/etas` with a deliberately invalid `transportType`, to make Apple echo
+   the accepted set in `ErrorResponse.details`. Fold the result into the
+   `TransportType` constants and drop the caveat comment from Step 1.
+4. Record any place where observed behaviour contradicts the documented schema.
+
+Budget: well under 20 calls against the 25,000/day quota.
+
+## Done when
+
+- `go build ./... && go vet ./... && go test ./applemaps/...` clean.
+- No import of `iowrappers` or `POI` anywhere in `applemaps/` — the extractability
+  property from spec § "Package layout". Enforced by a test that greps the
+  package's own imports.
+- `transportType` resolved from Step 8, not guessed.
+- `*.p8` ignored; no key material in any committed file.

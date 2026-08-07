@@ -100,7 +100,7 @@ applemaps/
   auth.go          TokenSource: ES256 JWT signing, /v1/token exchange, TTL cache
   client.go        Client, Options, doJSON, backoff, 401-retry, typed 429
   types.go         all request/response structs
-  poicategory.go   the 75 PoiCategory constants
+  poicategory.go   the 77 PoiCategory constants
   geocode.go       Geocode, ReverseGeocode
   search.go        Search, SearchAll (pagination), SearchAutocomplete
   place.go         Place, Places, AlternateIDs
@@ -241,7 +241,7 @@ retired by the `Operational` read filters, and is refreshed only by
 
 ## Category mapping
 
-Apple's `PoiCategory` is a fixed 75-value enum whose entire retail branch is
+Apple's `PoiCategory` is a fixed 77-value enum whose entire retail branch is
 `Store`, plus `FoodMarket`, `Pharmacy`, `GasStation`, `Bakery`, `Cafe`,
 `Restaurant`. It has no `supermarket`, `department_store`, `clothing_store`,
 `electronics_store`, or `convenience_store`.
