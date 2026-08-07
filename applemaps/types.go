@@ -128,12 +128,6 @@ type TokenResponse struct {
 	ExpiresInSeconds int    `json:"expiresInSeconds"`
 }
 
-// ErrorResponse is the body Apple returns with a non-2xx status.
-type ErrorResponse struct {
-	Message string   `json:"message,omitempty"`
-	Details []string `json:"details,omitempty"`
-}
-
 // AutocompleteResult is a single suggestion from /v1/searchAutocomplete.
 //
 // CompletionURL is a relative URI into the search endpoint carrying opaque
@@ -209,12 +203,11 @@ type Step struct {
 // while a step reaches its path through Step.StepPathIndex. ResolveRoute walks
 // those indexes with bounds checks.
 //
-// StepPaths is typed as a slice of polylines, each polyline a slice of points,
-// which matches Apple's prose description ("each step path is a single polyline
-// represented as an array of points"). Apple's machine-readable schema annotates
-// the field as a flat array of Location, which contradicts that prose; the prose
-// is followed here and the live probe in step 8 of the implementation plan
-// confirms it.
+// StepPaths is a slice of polylines, each polyline a slice of points. Apple's
+// machine-readable schema annotates the field as a flat array of Location, which
+// contradicts its own prose description ("each step path is a single polyline
+// represented as an array of points"). A live response settles it in favour of
+// the prose: the field arrives as [[{lat,lng},...],[{lat,lng},...]].
 type DirectionsResponse struct {
 	Origin      *Place       `json:"origin,omitempty"`
 	Destination *Place       `json:"destination,omitempty"`
@@ -264,15 +257,27 @@ const DirectionsAvoidTolls DirectionsAvoid = "Tolls"
 // TransportType is a mode of transportation.
 //
 // Apple's documentation truncates the list of valid values mid-sentence ("which
-// is one of:" followed by nothing), so these three constants come from MapKit's
-// equivalent enum rather than from the Server API reference. Step 8 of the
-// implementation plan confirms the accepted set against the live API by sending
-// a deliberately invalid value and reading the accepted set back out of
-// ErrorResponse.Details.
+// is one of:" followed by nothing), so these constants were established
+// empirically against the live API instead: each was sent to /v1/etas and the
+// response status recorded. Automobile, Walking, Transit, and Cycling are all
+// accepted; "Bicycle" is rejected with HTTP 400 "transportType invalid", so
+// Cycling is the spelling for that mode.
+//
+// Apple does not enumerate the accepted values in its 400 response, so extending
+// this list means probing candidates one at a time.
 type TransportType string
 
 const (
 	TransportTypeAutomobile TransportType = "Automobile"
 	TransportTypeWalking    TransportType = "Walking"
 	TransportTypeTransit    TransportType = "Transit"
+	TransportTypeCycling    TransportType = "Cycling"
 )
+
+// AllTransportTypes lists every mode confirmed to be accepted.
+var AllTransportTypes = []TransportType{
+	TransportTypeAutomobile,
+	TransportTypeWalking,
+	TransportTypeTransit,
+	TransportTypeCycling,
+}

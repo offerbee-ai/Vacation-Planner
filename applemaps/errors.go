@@ -12,6 +12,46 @@ import (
 // response into memory.
 const maxErrorBodyBytes = 64 << 10
 
+// ErrorResponse is the body Apple returns with a non-2xx status.
+//
+// The wire format does not match Apple's published schema. The documented
+// ErrorResponse object carries message and details at the top level, but the live
+// API nests them under an "error" key:
+//
+//	{"error":{"message":"transportType invalid","details":[]}}
+//
+// Both forms are accepted here. Decoding only the documented shape silently
+// produced empty messages against the real service, which is how this was found.
+type ErrorResponse struct {
+	Message string
+	Details []string
+}
+
+// UnmarshalJSON accepts either the nested wire format or the flat documented one,
+// preferring the nested form when both are somehow present.
+func (e *ErrorResponse) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Error *struct {
+			Message string   `json:"message"`
+			Details []string `json:"details"`
+		} `json:"error"`
+		Message string   `json:"message"`
+		Details []string `json:"details"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+
+	if wire.Error != nil {
+		e.Message = wire.Error.Message
+		e.Details = wire.Error.Details
+		return nil
+	}
+	e.Message = wire.Message
+	e.Details = wire.Details
+	return nil
+}
+
 // APIError is a non-2xx response from the Apple Maps Server API.
 type APIError struct {
 	StatusCode int

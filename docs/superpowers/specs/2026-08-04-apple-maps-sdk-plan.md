@@ -144,6 +144,48 @@ throwaway `main` under `/private/tmp`, never committed:
 
 Budget: well under 20 calls against the 25,000/day quota.
 
+### Step 8 findings
+
+Run on 2026-08-06 with team `JRBD76VZ75` and key `FUTFWSCQA4`. Roughly 30 calls.
+Every endpoint answered successfully.
+
+1. **`ErrorResponse` does not match its published schema.** Apple documents
+   `message` and `details` at the top level; the live API nests them:
+
+   ```json
+   {"error":{"message":"transportType invalid","details":[]}}
+   ```
+
+   Decoding only the documented shape produced empty error messages, losing the
+   reason for every failure. `ErrorResponse.UnmarshalJSON` now accepts both forms,
+   preferring the nested one. This was the single real defect the probe caught.
+
+2. **`TransportType` has four values, not three.** `Automobile`, `Walking`,
+   `Transit`, and `Cycling` are all accepted; `Bicycle` is rejected with HTTP 400.
+   `Cycling` was missing from the MapKit-derived guess. Apple's 400 response does
+   not enumerate the accepted set, so each candidate had to be probed
+   individually — `AllTransportTypes` records the confirmed list.
+
+3. **`stepPaths` is an array of polylines**, confirming the prose over the
+   machine-readable schema: `[[{lat,lng}],[{lat,lng},{lat,lng},…]]`. A real
+   San Francisco to Cupertino route returned 1 route, 15 steps, and 15 step
+   paths, and `ResolveRoute` walked all 15.
+
+4. **`FAILED_INVALID_ID`** is the `errorCode` for an unknown place ID. A batch
+   lookup of one good and one bogus ID returned 1 result and 1 error together,
+   confirming the partial-success handling.
+
+5. **The category mapping looks better than feared for grocery.** All ten results
+   for `q=supermarket` near Cupertino came back as `FoodMarket`, not `Store` —
+   Safeway, Hankook Supermarket, 99 Ranch Market. That is one query in one metro
+   area, so it is encouraging rather than conclusive, but it is evidence for the
+   design's approach of carrying specificity in `q`.
+
+Not established: the observed `expiresInSeconds`. The probe's raw `/v1/token`
+call presented the access token rather than a freshly signed auth JWT and so
+returned 401. The value is documented as 1800 and the decode is covered by test,
+but it has not been seen on the wire.
+
 ## Done when
 
 - `go build ./... && go vet ./... && go test ./applemaps/...` clean.
