@@ -23,6 +23,13 @@ at `POST /v1/nearby-places` and `POST /v1/nearby-places-by-category`. For those
 use cases the load-bearing fields are a place's **coordinate, name, address, and
 category** — not rating, price level, opening hours, or photos.
 
+> **Superseded in part.** Auditing offerbee's call sites found five consumed
+> endpoints rather than two, and found that opening hours *are* load-bearing —
+> both consumers filter on them. Price level, by contrast, is read nowhere at all.
+> See [the Phase 2 plan](2026-08-07-apple-maps-phase-2-plan.md), whose
+> corrections take precedence over this section and over the category mapping
+> table below.
+
 ## What Apple actually returns
 
 Verified against Apple's published schema, not assumed.
@@ -231,8 +238,14 @@ downstream caller changes shape:
    search tagged the place with (often the SEARCHED type, not the actual one)",
    so this matches existing semantics rather than fighting them.
 6. Fill unavailable fields explicitly, never by accidental zero value:
-   `Status = POI.Operational`, `Hours = POI.DefaultOpeningHours` for all seven
-   days, `Rating` / `PriceLevel` / `UserRatingsTotal` / `Photo` left zero.
+   `Status = POI.Operational`, `Hours` left **empty**, `Rating` / `PriceLevel` /
+   `UserRatingsTotal` / `Photo` left zero.
+
+   This step originally specified `Hours = POI.DefaultOpeningHours`. That was
+   wrong: offerbee treats hours of the wrong length as "unknown, keep", but seven
+   entries of the `"8:30 am – 9:30 pm"` placeholder parse as a real window and
+   produce a confident open/closed answer from invented data. Empty hours degrade
+   honestly; filled defaults lie. See Correction 1 in the Phase 2 plan.
 
 Because Apple reports no business status, the closure-persistence behaviour added
 in commit `03f799c` stays Google-only. An Apple-sourced record can never be
@@ -253,6 +266,17 @@ mall)" — exactly the distinction Apple collapses.
 Mitigation: **do not read `poiCategory` off the response to determine type.**
 Carry specificity in the free-text `q`, use `includePoiCategories` only as a
 coarse narrowing filter, and tag results with the requested type.
+
+> **Superseded.** The best-effort table below is replaced by an allowlist in the
+> Phase 2 plan. Tagging results with the requested type is unsafe for ambiguous
+> retail: offerbee maps `hardware_store`, `electronics_store`,
+> `convenience_store` and others deliberately to *no reward*, because crediting a
+> department-store or grocery bonus there is worse than the base rate. Since
+> Apple's `q` matching is loose — measured at 23 loosely related results for
+> `q=Golden Gate Bridge` — a `q=supermarket` search returning a convenience store
+> would be tagged `supermarket` and credited a bonus the card excludes. Apple now
+> serves only types with an unambiguous Apple equivalent; everything else routes
+> to Google.
 
 Table lives in the adapter, not in `applemaps/`, since it is Google-taxonomy
 specific:
