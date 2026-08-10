@@ -222,6 +222,91 @@ func TestStepPathsDecodeAsPolylines(t *testing.T) {
 	}
 }
 
+// /v1/searchAutocomplete spells a coordinate "lat"/"lng" while every other
+// endpoint spells it "latitude"/"longitude". Apple documents one Location type and
+// never mentions the second spelling; only that endpoint's example response shows
+// it. Decoding just the documented form is silently wrong rather than an error,
+// because encoding/json drops unknown keys — the coordinate becomes (0, 0), which
+// is a real point off the coast of Ghana.
+func TestLocationDecodesBothWireSpellings(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		wantLat  float64
+		wantLong float64
+	}{
+		{
+			name:     "documented spelling",
+			body:     `{"latitude":48.858,"longitude":2.294}`,
+			wantLat:  48.858,
+			wantLong: 2.294,
+		},
+		{
+			name:     "searchAutocomplete spelling",
+			body:     `{"lat":37.785743713378906,"lng":-122.40109252929688}`,
+			wantLat:  37.785743713378906,
+			wantLong: -122.40109252929688,
+		},
+		{
+			// A coordinate legitimately at zero must not read as an absent key and
+			// fall through to the other spelling.
+			name:     "explicit zero in the documented spelling",
+			body:     `{"latitude":0,"longitude":0,"lat":1,"lng":1}`,
+			wantLat:  0,
+			wantLong: 0,
+		},
+		{
+			name:     "documented spelling wins when both are present",
+			body:     `{"latitude":48.858,"longitude":2.294,"lat":1,"lng":1}`,
+			wantLat:  48.858,
+			wantLong: 2.294,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got Location
+			if err := json.Unmarshal([]byte(tt.body), &got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Latitude != tt.wantLat || got.Longitude != tt.wantLong {
+				t.Errorf("got %+v, want {%v %v}", got, tt.wantLat, tt.wantLong)
+			}
+		})
+	}
+}
+
+// The tolerant decoder must not disturb the endpoints that nest a Location, since
+// those all use the documented spelling.
+func TestNestedLocationsStillDecode(t *testing.T) {
+	const body = `{
+		"etas":[{"destination":{"latitude":37.32,"longitude":-121.94},"distanceMeters":1200}]
+	}`
+	var got EtaResponse
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.ETAs) != 1 || got.ETAs[0].Destination == nil {
+		t.Fatalf("etas did not decode: %+v", got)
+	}
+	if got.ETAs[0].Destination.Latitude != 37.32 {
+		t.Errorf("destination latitude: got %v, want 37.32", got.ETAs[0].Destination.Latitude)
+	}
+}
+
+// Apple's StructuredAddress schema lists ten fields; live responses carry
+// subAdministrativeArea as an eleventh.
+func TestStructuredAddressDecodesSubAdministrativeArea(t *testing.T) {
+	const body = `{"administrativeArea":"California","subAdministrativeArea":"San Francisco County","locality":"San Francisco"}`
+	var got StructuredAddress
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.SubAdministrativeArea != "San Francisco County" {
+		t.Errorf("subAdministrativeArea: got %q, want %q", got.SubAdministrativeArea, "San Francisco County")
+	}
+}
+
 func TestPlacesResponseSurfacesPartialFailure(t *testing.T) {
 	const body = `{"results":[{"id":"good","name":"Somewhere"}],"errors":[{"id":"bad","errorCode":"NOT_FOUND"}]}`
 	var got PlacesResponse

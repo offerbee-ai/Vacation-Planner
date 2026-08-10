@@ -95,6 +95,13 @@ func TestDirectionsValidation(t *testing.T) {
 			name: "both dates",
 			req:  DirectionsRequest{Origin: "a", Destination: "b", DepartureDate: &now, ArrivalDate: &now},
 		},
+		{
+			// /v1/directions documents Automobile, Walking, and Cycling only.
+			// Transit is valid for ETAs alone, matching MapKit, which gives
+			// transit travel times but no transit turn-by-turn.
+			name: "transit",
+			req:  DirectionsRequest{Origin: "a", Destination: "b", TransportType: TransportTypeTransit},
+		},
 	}
 
 	for _, tc := range tests {
@@ -106,6 +113,27 @@ func TestDirectionsValidation(t *testing.T) {
 				t.Error("want a validation error")
 			}
 		})
+	}
+}
+
+// Transit is rejected for Directions but must stay available for ETAs, which is
+// the whole point of splitting the two lists.
+func TestETAsAcceptsTransit(t *testing.T) {
+	var gotQuery url.Values
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		fmt.Fprint(w, `{"etas":[]}`)
+	})
+
+	if _, err := client.ETAs(context.Background(), ETAsRequest{
+		Origin:        Location{Latitude: 37.33, Longitude: -122.03},
+		Destinations:  []Location{{Latitude: 37.32, Longitude: -121.94}},
+		TransportType: TransportTypeTransit,
+	}); err != nil {
+		t.Fatalf("ETAs with Transit: %v", err)
+	}
+	if got := gotQuery.Get("transportType"); got != "Transit" {
+		t.Errorf("transportType: got %q, want %q", got, "Transit")
 	}
 }
 

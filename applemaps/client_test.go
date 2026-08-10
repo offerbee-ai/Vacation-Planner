@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,6 +99,78 @@ func TestGetRetriesOnceAfter401(t *testing.T) {
 	// token, not the rejected one.
 	if got := tokenCalls.Load(); got != 2 {
 		t.Errorf("token exchanges: got %d, want 2 — the 401 should have forced a re-exchange", got)
+	}
+}
+
+// A burst of concurrent requests sharing one revoked token must cost one extra
+// token exchange between them, not one each.
+//
+// Invalidation used to be unconditional, so each goroutine's 401 cleared the token
+// the previous goroutine had just fetched: N goroutines meant N exchanges, each
+// discarding a valid token. Against a 25,000-per-day quota shared with a
+// production app that is a real cost, and the retries were left racing over which
+// token they held.
+func TestConcurrent401sExchangeTokenOnce(t *testing.T) {
+	var tokenCalls atomic.Int64
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == tokenPath {
+			n := tokenCalls.Add(1)
+			// Hold the response so the goroutines genuinely overlap rather than
+			// finishing one after another.
+			time.Sleep(20 * time.Millisecond)
+			fmt.Fprintf(w, `{"accessToken":"token-%d","expiresInSeconds":1800}`, n)
+			return
+		}
+		// The first token is rejected; anything later is accepted. This is the
+		// revoked-early case, hit by every goroutine at once.
+		if r.Header.Get("Authorization") == "Bearer token-1" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"message":"Invalid token"}`)
+			return
+		}
+		fmt.Fprint(w, `{"ok":true}`)
+	}))
+	defer srv.Close()
+
+	client, err := New(Options{
+		TeamID: "T", KeyID: "K", PrivateKey: testKey(t), BaseURL: srv.URL,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	client.sleep = func(context.Context, time.Duration) error { return nil }
+
+	// Prime the cache so every goroutine starts holding the same doomed token,
+	// which is the situation the guard exists for.
+	if _, err := client.tokens.Token(context.Background()); err != nil {
+		t.Fatalf("priming exchange: %v", err)
+	}
+
+	const goroutines = 50
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+
+	wg.Add(goroutines)
+	for i := range goroutines {
+		go func() {
+			defer wg.Done()
+			var out struct{ OK bool }
+			if errs[i] = client.get(context.Background(), "/v1/thing", nil, &out); errs[i] == nil && !out.OK {
+				errs[i] = errors.New("retry body did not decode")
+			}
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: %v", i, err)
+		}
+	}
+	// One priming exchange plus exactly one refresh shared by all 50.
+	if got := tokenCalls.Load(); got != 2 {
+		t.Errorf("token exchanges: got %d, want 2", got)
 	}
 }
 

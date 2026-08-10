@@ -35,7 +35,9 @@ type DirectionsRequest struct {
 	Origin string
 	// Destination is the ending address or coordinate. Required.
 	Destination string
-	// TransportType selects the mode of transportation.
+	// TransportType selects the mode of transportation. Apple accepts
+	// DirectionsTransportTypes here — every mode except TransportTypeTransit,
+	// which is valid only for ETAs.
 	TransportType TransportType
 	// DepartureDate is the intended departure. Apple accepts either this or
 	// ArrivalDate, never both.
@@ -74,6 +76,13 @@ func (r DirectionsRequest) validate() error {
 	// here gives a specific message instead of a generic 400, and saves a call.
 	if r.DepartureDate != nil && r.ArrivalDate != nil {
 		return errors.New("applemaps: Directions accepts DepartureDate or ArrivalDate, not both")
+	}
+	// /v1/directions documents Automobile, Walking, and Cycling only, matching
+	// MapKit, which gives transit travel times but no transit turn-by-turn. The
+	// error names the endpoint that does serve transit, since a caller reaching
+	// for it wants a travel time and can get one.
+	if r.TransportType == TransportTypeTransit {
+		return errors.New("applemaps: Directions does not support TransportTypeTransit; use ETAs for transit travel times")
 	}
 	return nil
 }

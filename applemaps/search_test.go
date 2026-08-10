@@ -364,11 +364,15 @@ func TestSearchAutocomplete(t *testing.T) {
 	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.Query()
+		// Keys copied from Apple's own documented /v1/searchAutocomplete response.
+		// This endpoint spells the coordinate "lat"/"lng" rather than the
+		// "latitude"/"longitude" every other endpoint uses, and returns a
+		// subAdministrativeArea that Apple's StructuredAddress schema omits.
 		fmt.Fprint(w, `{"results":[
 			{"completionUrl":"/v1/search?q=eiffel&metadata=abc",
 			 "displayLines":["Eiffel Tower","Paris, France"],
-			 "location":{"latitude":48.858,"longitude":2.294},
-			 "structuredAddress":{"locality":"Paris"}}
+			 "location":{"lat":48.858,"lng":2.294},
+			 "structuredAddress":{"locality":"Paris","subAdministrativeArea":"Paris"}}
 		]}`)
 	})
 
@@ -402,11 +406,17 @@ func TestSearchAutocomplete(t *testing.T) {
 	if len(got.DisplayLines) != 2 {
 		t.Errorf("displayLines: got %d, want 2", len(got.DisplayLines))
 	}
-	if got.Location == nil || got.Location.Latitude != 48.858 {
-		t.Error("location did not decode")
+	if got.Location == nil {
+		t.Fatal("location did not decode")
+	}
+	if got.Location.Latitude != 48.858 || got.Location.Longitude != 2.294 {
+		t.Errorf("location: got %+v, want {48.858 2.294}", *got.Location)
 	}
 	if got.StructuredAddress == nil || got.StructuredAddress.Locality != "Paris" {
-		t.Error("structuredAddress did not decode")
+		t.Fatal("structuredAddress did not decode")
+	}
+	if got.StructuredAddress.SubAdministrativeArea != "Paris" {
+		t.Errorf("subAdministrativeArea: got %q, want %q", got.StructuredAddress.SubAdministrativeArea, "Paris")
 	}
 }
 
@@ -416,6 +426,75 @@ func TestSearchAutocompleteRequiresQ(t *testing.T) {
 	})
 	if _, err := client.SearchAutocomplete(context.Background(), SearchAutocompleteRequest{}); err == nil {
 		t.Error("want an error when Q is empty")
+	}
+}
+
+// Apple rejects the address-category filters unless the result type filter admits
+// addresses. Catching it locally names the missing value; Apple's 400 does not.
+func TestSearchRejectsAddressCategoriesWithoutAddressResultType(t *testing.T) {
+	var sent atomic.Int64
+	client, _ := testClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		sent.Add(1)
+		fmt.Fprint(w, `{"results":[]}`)
+	})
+
+	_, err := client.Search(context.Background(), SearchRequest{
+		Q:                        "paris",
+		ResultTypeFilter:         []SearchResultType{SearchResultTypePoi},
+		IncludeAddressCategories: []AddressCategory{AddressCategoryPostalCode},
+	})
+	if err == nil {
+		t.Fatal("want an error when address categories lack an address result type")
+	}
+	if got := sent.Load(); got != 0 {
+		t.Errorf("requests sent: got %d, want 0 — validation must not spend a call", got)
+	}
+
+	// The same request is legal once the address type is present.
+	if _, err := client.Search(context.Background(), SearchRequest{
+		Q:                        "paris",
+		ResultTypeFilter:         []SearchResultType{SearchResultTypePoi, SearchResultTypeAddress},
+		IncludeAddressCategories: []AddressCategory{AddressCategoryPostalCode},
+	}); err != nil {
+		t.Fatalf("Search with an address result type: %v", err)
+	}
+	if got := sent.Load(); got != 1 {
+		t.Errorf("requests sent: got %d, want 1", got)
+	}
+}
+
+// SearchACResultType has no address member, so there is no autocomplete request
+// that uses the address-category filters and is legal.
+func TestSearchAutocompleteRejectsAddressCategories(t *testing.T) {
+	client, _ := testClient(t, func(http.ResponseWriter, *http.Request) {
+		t.Error("no request should be sent for a combination Apple cannot satisfy")
+	})
+
+	_, err := client.SearchAutocomplete(context.Background(), SearchAutocompleteRequest{
+		Q:                        "eiffel",
+		ExcludeAddressCategories: []AddressCategory{AddressCategoryCountry},
+	})
+	if err == nil {
+		t.Error("want an error when autocomplete is given address categories")
+	}
+}
+
+func TestSearchRegionPriorityIsSentVerbatim(t *testing.T) {
+	var gotQuery url.Values
+	client, _ := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query()
+		fmt.Fprint(w, `{"results":[]}`)
+	})
+
+	if _, err := client.Search(context.Background(), SearchRequest{
+		Q:                    "cafe",
+		SearchRegion:         &MapRegion{NorthLatitude: 38, EastLongitude: -122.1, SouthLatitude: 37.5, WestLongitude: -122.5},
+		SearchRegionPriority: SearchRegionPriorityRequired,
+	}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if got := gotQuery.Get("searchRegionPriority"); got != "required" {
+		t.Errorf("searchRegionPriority: got %q, want %q", got, "required")
 	}
 }
 

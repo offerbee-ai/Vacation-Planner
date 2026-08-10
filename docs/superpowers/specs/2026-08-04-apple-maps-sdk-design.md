@@ -50,8 +50,29 @@ Verified against Apple's published schema, not assumed.
 `SearchResponse.Place` extends `Place` with exactly one field: `poiCategory`.
 
 `StructuredAddress`: `administrativeArea`, `administrativeAreaCode`,
-`areasOfInterest`, `dependentLocalities`, `fullThoroughfare`, `locality`,
-`postCode`, `subLocality`, `subThoroughfare`, `thoroughfare`.
+`subAdministrativeArea`, `areasOfInterest`, `dependentLocalities`,
+`fullThoroughfare`, `locality`, `postCode`, `subLocality`, `subThoroughfare`,
+`thoroughfare`.
+
+> `subAdministrativeArea` is **not** in Apple's published `StructuredAddress`
+> schema, which lists the other ten. Live responses carry it — Apple's own
+> `/v1/searchAutocomplete` example returns `"subAdministrativeArea":"San Francisco
+> County"` on most results. This section originally transcribed the schema and so
+> inherited the omission; the county was being decoded away silently.
+
+`AutocompleteResult.location` is `{"lat":…,"lng":…}`, not the
+`{"latitude":…,"longitude":…}` that `Location` uses everywhere else. Apple documents
+one `Location` type and never mentions the second spelling. `applemaps.Location`
+accepts both on decode.
+
+`AddressCategory` has six values, not the five its reference page appears to list:
+Apple's markup runs `AdministrativeArea` into the `Country` bullet. The `/v1/search`
+parameter documentation confirms it by using the value in its own example.
+
+`TransportType` is not uniform across endpoints. `/v1/etas` takes `Automobile`,
+`Walking`, `Transit`, and `Cycling`; `/v1/directions` documents the same set minus
+`Transit`, matching MapKit, which gives transit travel times but no transit
+turn-by-turn.
 
 ### Fields Apple does not provide, at any tier
 

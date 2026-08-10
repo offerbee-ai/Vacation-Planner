@@ -108,6 +108,10 @@ type TokenSource struct {
 	mu     sync.Mutex
 	token  string
 	expiry time.Time
+	// generation identifies the current cached token. It increments on every
+	// successful exchange so a caller holding a token that failed can ask for it
+	// to be discarded without discarding whatever replaced it.
+	generation uint64
 }
 
 // NewTokenSource validates the credentials and returns a TokenSource. It makes
@@ -150,23 +154,60 @@ func NewTokenSource(cfg TokenSourceConfig) (*TokenSource, error) {
 // endpoint — a 50-goroutine cold start would otherwise spend 50 calls to learn
 // the same token.
 func (ts *TokenSource) Token(ctx context.Context) (string, error) {
+	token, _, err := ts.tokenWithGeneration(ctx)
+	return token, err
+}
+
+// tokenWithGeneration returns a valid access token along with the generation that
+// identifies it, for callers that may need to invalidate exactly that token.
+func (ts *TokenSource) tokenWithGeneration(ctx context.Context) (string, uint64, error) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
 	if ts.token != "" && ts.now().Before(ts.expiry.Add(-tokenRefreshMargin)) {
-		return ts.token, nil
+		return ts.token, ts.generation, nil
 	}
-	return ts.exchangeLocked(ctx)
+	token, err := ts.exchangeLocked(ctx)
+	if err != nil {
+		return "", 0, err
+	}
+	return token, ts.generation, nil
 }
 
-// Invalidate discards the cached token so the next Token call re-exchanges. The
-// client calls this after a 401, which is how a token revoked before its stated
-// expiry is recovered from.
+// Invalidate discards the cached token unconditionally, so the next Token call
+// re-exchanges.
 func (ts *TokenSource) Invalidate() {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
+	ts.clearLocked()
+}
+
+// invalidateGeneration discards the cached token only if it is still the one
+// identified by generation.
+//
+// The unconditional Invalidate is wrong on the client's 401 path. A burst of N
+// in-flight requests sharing one revoked token all get 401 and all want a refresh;
+// serialised by the mutex, each would clear the token the previous goroutine had
+// just fetched and exchange again — N calls against a quota shared with a
+// production app, and a retry left holding a token another goroutine already
+// discarded. Checking the generation makes every 401 after the first a no-op,
+// because the refresh they were asking for has already happened.
+func (ts *TokenSource) invalidateGeneration(generation uint64) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.generation != generation {
+		return
+	}
+	ts.clearLocked()
+}
+
+// clearLocked drops the cached token. Callers must hold ts.mu.
+func (ts *TokenSource) clearLocked() {
 	ts.token = ""
 	ts.expiry = time.Time{}
+	// The generation advances so an invalidateGeneration racing on the token just
+	// dropped does not go on to clear its replacement.
+	ts.generation++
 }
 
 // authJWT builds and signs the short-lived JWT that /v1/token accepts.
@@ -227,5 +268,6 @@ func (ts *TokenSource) exchangeLocked(ctx context.Context) (string, error) {
 
 	ts.token = parsed.AccessToken
 	ts.expiry = ts.now().Add(time.Duration(parsed.ExpiresInSeconds) * time.Second)
+	ts.generation++
 	return ts.token, nil
 }

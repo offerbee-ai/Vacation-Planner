@@ -124,47 +124,54 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 // with backoff, because the likely cause is transient. A 429 is retried by
 // neither: the quota is daily, so no amount of waiting inside one request helps.
 func (c *Client) get(ctx context.Context, path string, params url.Values, out any) error {
-	err := c.attempt(ctx, path, params, out)
+	generation, err := c.attempt(ctx, path, params, out)
 
 	var authErr *AuthError
 	if errors.As(err, &authErr) {
-		c.tokens.Invalidate()
-		return c.attempt(ctx, path, params, out)
+		// Only the token that actually drew the 401 is discarded. Under a
+		// concurrent burst every request holds the same revoked token, and
+		// clearing unconditionally would make each one throw away the refresh the
+		// last one just paid for.
+		c.tokens.invalidateGeneration(generation)
+		_, err = c.attempt(ctx, path, params, out)
 	}
 	return err
 }
 
-// attempt performs one logical request, retrying retryable status codes.
-func (c *Client) attempt(ctx context.Context, path string, params url.Values, out any) error {
+// attempt performs one logical request, retrying retryable status codes. It also
+// reports the token generation the last round trip used, so a 401 can be traced
+// back to the exact token that failed.
+func (c *Client) attempt(ctx context.Context, path string, params url.Values, out any) (uint64, error) {
 	var lastErr error
+	var generation uint64
 
 	for i := 0; i <= c.maxRetries; i++ {
 		if i > 0 {
 			// Exponential backoff: 200ms, 400ms, 800ms...
 			delay := retryBaseDelay << (i - 1)
 			if err := c.sleep(ctx, delay); err != nil {
-				return err
+				return generation, err
 			}
 		}
 
-		lastErr = c.once(ctx, path, params, out)
+		generation, lastErr = c.once(ctx, path, params, out)
 		if lastErr == nil {
-			return nil
+			return generation, nil
 		}
 
 		var apiErr *APIError
 		if !errors.As(lastErr, &apiErr) || !retryable(apiErr.StatusCode) {
-			return lastErr
+			return generation, lastErr
 		}
 	}
-	return lastErr
+	return generation, lastErr
 }
 
-// once performs a single HTTP round trip.
-func (c *Client) once(ctx context.Context, path string, params url.Values, out any) error {
-	token, err := c.tokens.Token(ctx)
+// once performs a single HTTP round trip, reporting the token generation it used.
+func (c *Client) once(ctx context.Context, path string, params url.Values, out any) (uint64, error) {
+	token, generation, err := c.tokens.tokenWithGeneration(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	endpoint := c.baseURL + path
@@ -174,37 +181,37 @@ func (c *Client) once(ctx context.Context, path string, params url.Values, out a
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("applemaps: build request: %w", err)
+		return generation, fmt.Errorf("applemaps: build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("applemaps: %s: %w", path, err)
+		return generation, fmt.Errorf("applemaps: %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		if readErr != nil {
-			return fmt.Errorf("applemaps: %s: HTTP %d and unreadable body: %w", path, resp.StatusCode, readErr)
+			return generation, fmt.Errorf("applemaps: %s: HTTP %d and unreadable body: %w", path, resp.StatusCode, readErr)
 		}
-		return newAPIError(resp.StatusCode, body)
+		return generation, newAPIError(resp.StatusCode, body)
 	}
 
 	if out == nil {
-		return nil
+		return generation, nil
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
-		return fmt.Errorf("applemaps: %s: read response: %w", path, err)
+		return generation, fmt.Errorf("applemaps: %s: read response: %w", path, err)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("applemaps: %s: decode response: %w", path, err)
+		return generation, fmt.Errorf("applemaps: %s: decode response: %w", path, err)
 	}
-	return nil
+	return generation, nil
 }
 
 // applyLang sets the lang parameter, preferring an explicit per-request value

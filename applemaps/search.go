@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"slices"
 )
 
 const (
@@ -51,7 +52,7 @@ type SearchRequest struct {
 	// UserLocation is used as a fallback bias when SearchLocation is unset.
 	UserLocation *Location
 	// SearchRegionPriority indicates how strongly to weight SearchRegion.
-	SearchRegionPriority string
+	SearchRegionPriority SearchRegionPriority
 	// EnablePagination asks Apple to return paginated results, populating
 	// SearchResponse.PaginationInfo. It belongs on the first request of a
 	// sequence only; subsequent pages are fetched with SearchPage.
@@ -61,6 +62,14 @@ type SearchRequest struct {
 func (r SearchRequest) validate() error {
 	if r.Q == "" {
 		return errors.New("applemaps: Search requires Q")
+	}
+	// Apple rejects the address-category filters unless the result type filter
+	// admits addresses. Catching it here costs nothing and names the missing
+	// value, which Apple's 400 does not.
+	if len(r.IncludeAddressCategories) > 0 || len(r.ExcludeAddressCategories) > 0 {
+		if !slices.Contains(r.ResultTypeFilter, SearchResultTypeAddress) {
+			return errors.New("applemaps: address categories require SearchResultTypeAddress in ResultTypeFilter")
+		}
 	}
 	return nil
 }
@@ -93,7 +102,7 @@ func (r SearchRequest) params(c *Client) url.Values {
 		params.Set("userLocation", formatLocation(r.UserLocation.Latitude, r.UserLocation.Longitude))
 	}
 	if r.SearchRegionPriority != "" {
-		params.Set("searchRegionPriority", r.SearchRegionPriority)
+		params.Set("searchRegionPriority", string(r.SearchRegionPriority))
 	}
 	if r.EnablePagination {
 		params.Set("enablePagination", "true")
@@ -179,8 +188,8 @@ type SearchAllResult struct {
 // The first page is a full query; every later page is a bare token request via
 // SearchPage, because Apple accepts no other parameter alongside a page token.
 func (c *Client) SearchAll(ctx context.Context, req SearchRequest, maxPages int) (*SearchAllResult, error) {
-	if req.Q == "" {
-		return nil, errors.New("applemaps: SearchAll requires Q")
+	if err := req.validate(); err != nil {
+		return nil, err
 	}
 	if maxPages <= 0 {
 		maxPages = DefaultMaxSearchPages
@@ -258,7 +267,25 @@ type SearchAutocompleteRequest struct {
 	// UserLocation is used as a fallback bias when SearchLocation is unset.
 	UserLocation *Location
 	// SearchRegionPriority indicates how strongly to weight SearchRegion.
-	SearchRegionPriority string
+	SearchRegionPriority SearchRegionPriority
+}
+
+// validate rejects, without spending a call, the combinations Apple answers with a
+// 400.
+//
+// The address-category filters are unsatisfiable on this endpoint rather than
+// merely unset: Apple requires an address result type alongside them, and
+// SearchACResultType has no address member, so there is no request that both uses
+// them and is legal.
+func (r SearchAutocompleteRequest) validate() error {
+	if r.Q == "" {
+		return errors.New("applemaps: SearchAutocomplete requires Q")
+	}
+	if len(r.IncludeAddressCategories) > 0 || len(r.ExcludeAddressCategories) > 0 {
+		return errors.New("applemaps: SearchAutocomplete does not support address categories; " +
+			"Apple requires an address result type with them and searchAutocomplete has none")
+	}
+	return nil
 }
 
 func (r SearchAutocompleteRequest) params(c *Client) url.Values {
@@ -289,7 +316,7 @@ func (r SearchAutocompleteRequest) params(c *Client) url.Values {
 		params.Set("userLocation", formatLocation(r.UserLocation.Latitude, r.UserLocation.Longitude))
 	}
 	if r.SearchRegionPriority != "" {
-		params.Set("searchRegionPriority", r.SearchRegionPriority)
+		params.Set("searchRegionPriority", string(r.SearchRegionPriority))
 	}
 	return params
 }
@@ -297,8 +324,8 @@ func (r SearchAutocompleteRequest) params(c *Client) url.Values {
 // SearchAutocomplete returns suggestions for a partial query. An empty result
 // set is not an error, for the same reason as Search.
 func (c *Client) SearchAutocomplete(ctx context.Context, req SearchAutocompleteRequest) ([]AutocompleteResult, error) {
-	if req.Q == "" {
-		return nil, errors.New("applemaps: SearchAutocomplete requires Q")
+	if err := req.validate(); err != nil {
+		return nil, err
 	}
 
 	var resp SearchAutocompleteResponse
