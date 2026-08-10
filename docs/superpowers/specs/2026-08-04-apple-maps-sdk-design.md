@@ -249,11 +249,18 @@ downstream caller changes shape:
    `enablePagination=true`. The bbox is the coordinate offset by `req.Radius` in
    each cardinal direction: `±radius/111320` degrees latitude, and
    `±radius/(111320·cos(lat))` degrees longitude.
-3. Page until a page yields zero results inside the radius, or 5 pages have been
-   fetched. The cap bounds quota consumption per search; when it is hit, log the
-   truncation rather than returning silently short.
-4. **Haversine-filter every result to `req.Radius`.** Apple's location params are
-   hints, so unfiltered results can be arbitrarily far away.
+3. Page until Apple offers no `nextPageToken`, or 5 pages have been fetched. The
+   cap bounds quota consumption per search; when it is hit, log the truncation
+   rather than returning silently short.
+
+   Pagination must **not** stop on a page that contributes nothing after the
+   radius filter. `searchLocation` and `searchRegion` are hints, not constraints,
+   so Apple's ordering carries no guarantee that a page with no in-radius result
+   is followed only by more of the same. Stopping there would drop results that
+   the next page held. Paginate first, filter afterwards.
+4. **Haversine-filter every result to `req.Radius`,** once pagination is done.
+   Apple's location params are hints, so unfiltered results can be arbitrarily
+   far away.
 5. Tag each place's `LocationType` with the **requested** type.
    `POI/places.go:80` already documents `LocationType` as "the single type a
    search tagged the place with (often the SEARCHED type, not the actual one)",
@@ -399,10 +406,29 @@ The 25,000 daily calls are per team and **shared with MapKit JS**, and once
 exhausted Apple returns `429` on every endpoint including `/v1/token`. Waiting
 for that cliff would make the whole service fail over at an unpredictable moment.
 
-Instead: a Redis counter keyed `applemaps:quota:<utc-date>`, incremented per
-outbound Apple call, expiring after 48 hours. Above a configurable threshold
-(default 90%), route to Google pre-emptively. The threshold is ours to tune; the
-cliff is not.
+Instead: a Redis counter keyed `applemaps:quota:<utc-date>`, expiring after 48
+hours. Above a configurable threshold (default 90%), route to Google
+pre-emptively. The threshold is ours to tune; the cliff is not.
+
+Two things about that counter have to be right, or the threshold guards a number
+that does not mean what it says.
+
+**Increment at the HTTP transport boundary, not per logical search.** One
+`NearbySearch` can cost several calls: up to 5 pages, a retry per 5xx, and a
+`/v1/token` exchange whenever the cached token has gone stale. Apple charges for
+every one of those. Counting logical operations would under-report by a factor
+that varies with the failure rate — worst exactly when the budget is tightest.
+
+**The counter can only ever see our own traffic.** The 25,000 is per team and
+shared with MapKit JS, so anything else shipping under team `JRBD76VZ75` spends
+from the same budget invisibly. A threshold applied to our count alone is
+therefore an under-estimate of true consumption, not a measure of it. The
+threshold must be applied to our count **plus a configured allowance for external
+consumption**, and that allowance stated explicitly rather than assumed to be
+zero. Sizing it needs the Maps developer dashboard, which reports true team-wide
+usage; until someone reads it, the allowance is a guess and the threshold should
+be set conservatively. This is why open question 2 — whether the native app uses
+MapKit JS — is a prerequisite for the quota guard rather than a curiosity.
 
 ## Testing
 

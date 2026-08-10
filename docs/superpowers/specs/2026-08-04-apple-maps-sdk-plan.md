@@ -27,8 +27,11 @@ Enum constants: `PoiCategory` (77 values, own file `poicategory.go`),
 `SearchResultType`, `SearchACResultType`, `AddressCategory`, `DirectionsAvoid`.
 
 `TransportType` is a string type with constants `Automobile`, `Walking`,
-`Transit`, carrying a comment that Apple's documentation truncates the valid set
-mid-sentence and that Step 8 confirms it empirically.
+`Transit`, and `Cycling`, carrying a comment that Apple's documentation truncates
+the valid set mid-sentence and that Step 8 confirms it empirically. `Cycling` is
+the spelling Apple accepts; `Bicycle` is rejected with HTTP 400. The set is not
+uniform across endpoints — `Transit` works on `/v1/etas` but not on
+`/v1/directions`, so `DirectionsRequest` rejects it locally.
 
 Every field is a pointer or has an explicit `omitempty` decision: Apple marks
 every response field optional, so a zero value must stay distinguishable from an
@@ -72,6 +75,14 @@ Tests:
 2. `Authorization: Bearer <accessToken>` is set from the `TokenSource`.
 3. `401` invalidates the token and retries once; a second `401` returns.
    Assert the retry actually re-exchanged.
+   Invalidation is generation-checked, so this needs a concurrent case too:
+   several requests holding the *same* stale token all get `401`, and between
+   them they must cost one refresh rather than one each. A late invalidation
+   naming a token that has already been replaced must be a no-op — an
+   unconditional clear would let each `401` discard the refresh the previous one
+   paid for. Cover it both racing (many goroutines, assert the exchange count)
+   and deterministically (two generations by hand, assert the newer token
+   survives), since the racing test cannot guarantee which interleaving it hit.
 4. `429` decodes to a distinct `QuotaError` — callers must be able to tell quota
    exhaustion from every other failure, since spec § "Quota guard" routes on it.
 5. `5xx` retries with backoff up to a cap, then returns the last error.
@@ -136,7 +147,15 @@ Against the real API using `~/.config/applemaps/AuthKey_FUTFWSCQA4.p8`, a
 throwaway `main` under `/private/tmp`, never committed:
 
 1. `/v1/token` — confirm the exchange and observed `expiresInSeconds`.
-2. One call per endpoint; save responses as `testdata/` fixtures.
+2. One call per endpoint. **Do not commit the responses.** Record the observed
+   *shape* — key names, nesting, which documented fields are absent and which
+   undocumented ones appear — and build fixtures from Apple's own published
+   example payloads or from synthetic data matching that shape. Apple's terms
+   restrict persistent caching of its data and its combination with other
+   providers, and that question is still open (see Open questions), so raw live
+   responses must not enter the repository ahead of it. If live fixtures ever
+   become necessary, they need legal sign-off plus stated scrubbing and retention
+   rules first.
 3. `/v1/etas` with a deliberately invalid `transportType`, to make Apple echo
    the accepted set in `ErrorResponse.details`. Fold the result into the
    `TransportType` constants and drop the caveat comment from Step 1.

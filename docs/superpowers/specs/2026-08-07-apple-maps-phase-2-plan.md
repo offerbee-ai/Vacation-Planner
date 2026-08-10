@@ -31,9 +31,11 @@ Categories requested: `Eatery`, `Shopping`, `Lodging`, `Wellness`, `Visit`
 - **`locationType` — load-bearing and safety-critical.** See below.
 - **`hours` — load-bearing.** Filters in both the brand and category paths.
 - **`rating` — read**, and passed through to the UI in three places.
-- **`priceLevel` — read nowhere in offerbee.** Confirmed by grep across
-  `packages` and `apps`. Apple's missing price level therefore costs nothing, and
-  the design's concern about it was misplaced.
+- **`priceLevel` — rendered nowhere in offerbee,** confirmed by grep across
+  `packages` and `apps`. That is narrower than it first looks: it settles the
+  *response* side only. Price is still an input on the request side of this
+  service, where it filters, so Apple's missing price level does cost something.
+  See Correction 4.
 
 ## Correction 1: Apple-sourced places must carry empty Hours
 
@@ -127,6 +129,33 @@ carries empty hours, so it degrades to "unknown, keep" rather than to a
 fabricated window — acceptable, and the reason Correction 1 is a prerequisite
 rather than a nicety.
 
+## Correction 4: price-constrained requests route to Google
+
+`priceLevel` being unread by offerbee (measured above) said only that nothing
+*renders* it. It is still an active part of the **search contract** on this side,
+and the design's "Apple's missing price level costs nothing" was scoped too
+narrowly.
+
+`matching/matcher.go:83` copies `req.PriceLevel` into `PlaceSearchRequest`, and
+two things downstream act on it:
+
+- `iowrappers/nearby_search.go:94-112` — when `POI.PriceyEatery` holds (an eatery
+  at level 3 or above), the price becomes Google's `MinPrice`/`MaxPrice`, a filter
+  applied by the provider. Apple has no equivalent parameter, so an Apple-served
+  request would return unfiltered results under a request that asked for filtered
+  ones.
+- `matching/matcher.go:128` — `filterPlacesOnPriceLevel` keeps a place only when
+  `place.PriceLevel == level` exactly. Apple-sourced places carry level zero by
+  Step 1's explicit-zero rule, so **every** Apple place is discarded whenever a
+  non-zero price filter runs. The Apple call is spent and its results thrown away.
+
+So this is not a degraded-field problem but a wasted-call-and-wrong-answer one.
+`canServe` returns false for any request with a non-zero `PriceLevel`, alongside
+the non-allowlisted types and the `localTime` case.
+
+Tests: a non-zero `PriceLevel` routes to Google with no Apple call; zero still
+reaches Apple when the type is allowlisted.
+
 ## Step 1 — `iowrappers/apple_maps_client.go`
 
 `AppleMapsClient` implementing `SearchClient` (`iowrappers/maps_client.go:19`).
@@ -169,13 +198,15 @@ type FallbackSearchClient struct {
 ```
 
 Routes to `secondary` (Google) when `canServe` is false — a non-allowlisted type,
-or a request carrying a local time — and falls back on error, `*applemaps.QuotaError`,
-or an empty result. Every fallback logs its reason so the real Apple hit rate is
-measurable rather than assumed.
+a request carrying a local time, or a request carrying a non-zero `PriceLevel` —
+and falls back on error, `*applemaps.QuotaError`, or an empty result. Every
+fallback logs its reason so the real Apple hit rate is measurable rather than
+assumed.
 
-Tests: allowlisted type with no local time goes to Apple; non-allowlisted goes to
-Google without an Apple call; local-time request goes to Google; each fallback
-trigger works; a success does not fall back.
+Tests: allowlisted type with no local time and no price constraint goes to Apple;
+non-allowlisted goes to Google without an Apple call; local-time request goes to
+Google; price-constrained request goes to Google; each fallback trigger works; a
+success does not fall back.
 
 ## Step 3 — quota counter
 
@@ -199,7 +230,8 @@ missing key degrades to Google-only rather than failing startup.
 - `go build ./... && go vet ./... && go test ./...` clean
 - Every offerbee-consumed field either sourced from Apple or explicitly left in
   its "unknown" state, never fabricated
-- `priceLevel` confirmed unread, so left at zero without concern
+- `priceLevel` left at zero on Apple places, and price-constrained requests never
+  reach Apple in the first place
 - Google still primary by default; Apple enabled by config
 - A table in this document recording, per offerbee endpoint, which provider serves
   it after this change

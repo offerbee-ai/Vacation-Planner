@@ -204,6 +204,138 @@ func TestTokenRefreshesInsideMargin(t *testing.T) {
 	}
 }
 
+// A token response that states no usable lifetime must not be taken at face
+// value. Trusting it would put expiry at or before now — inside the refresh
+// margin — so every later call would find the cached token stale and exchange
+// again, turning one malformed field into permanent double quota consumption.
+func TestTokenTTLIsSanitised(t *testing.T) {
+	tests := []struct {
+		name             string
+		expiresInSeconds int
+		wantTTL          time.Duration
+		wantReuseWindow  time.Duration
+	}{
+		{
+			name:             "absent lifetime falls back to the observed default",
+			expiresInSeconds: 0,
+			wantTTL:          defaultTokenTTL,
+			wantReuseWindow:  defaultTokenTTL - tokenRefreshMargin,
+		},
+		{
+			name:             "negative lifetime falls back too",
+			expiresInSeconds: -1,
+			wantTTL:          defaultTokenTTL,
+			wantReuseWindow:  defaultTokenTTL - tokenRefreshMargin,
+		},
+		{
+			// Too short for the fixed margin, so the margin halves rather than
+			// leaving no window at all.
+			name:             "lifetime shorter than twice the margin keeps half of itself",
+			expiresInSeconds: 120,
+			wantTTL:          120 * time.Second,
+			wantReuseWindow:  60 * time.Second,
+		},
+		{
+			name:             "a normal lifetime is used as stated",
+			expiresInSeconds: 1800,
+			wantTTL:          1800 * time.Second,
+			wantReuseWindow:  1800*time.Second - tokenRefreshMargin,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, calls := tokenServer(t, "tok", tc.expiresInSeconds)
+			ts := newTestTokenSource(t, srv.URL, testKey(t))
+
+			start := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+			current := start
+			ts.now = func() time.Time { return current }
+
+			if _, err := ts.Token(context.Background()); err != nil {
+				t.Fatalf("Token: %v", err)
+			}
+			if want := start.Add(tc.wantTTL); !ts.expiry.Equal(want) {
+				t.Errorf("expiry: got %v, want %v", ts.expiry, want)
+			}
+
+			// Just inside the reuse window the token is served from cache.
+			current = start.Add(tc.wantReuseWindow - time.Second)
+			if _, err := ts.Token(context.Background()); err != nil {
+				t.Fatalf("cached Token: %v", err)
+			}
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("exchanges inside the window: got %d, want 1", got)
+			}
+
+			// Just past it, exactly one refresh happens.
+			current = start.Add(tc.wantReuseWindow + time.Second)
+			if _, err := ts.Token(context.Background()); err != nil {
+				t.Fatalf("refreshed Token: %v", err)
+			}
+			if got := calls.Load(); got != 2 {
+				t.Errorf("exchanges past the window: got %d, want 2", got)
+			}
+		})
+	}
+}
+
+// Invalidation is generation-checked so a request that fails on an old token
+// cannot evict the token that has already replaced it. The concurrent version of
+// this lives in client_test.go; this pins the ordering deterministically, since
+// the racing test cannot guarantee which interleaving it exercised.
+func TestInvalidateGenerationIgnoresAStaleGeneration(t *testing.T) {
+	srv, calls := tokenServer(t, "tok", 1800)
+	ts := newTestTokenSource(t, srv.URL, testKey(t))
+
+	start := time.Date(2026, 8, 6, 12, 0, 0, 0, time.UTC)
+	ts.now = func() time.Time { return start }
+
+	// Two callers take the same token, so both hold the same generation.
+	first, firstGen, err := ts.tokenWithGeneration(context.Background())
+	if err != nil {
+		t.Fatalf("first token: %v", err)
+	}
+	_, secondGen, err := ts.tokenWithGeneration(context.Background())
+	if err != nil {
+		t.Fatalf("second token: %v", err)
+	}
+	if firstGen != secondGen {
+		t.Fatalf("generations: got %d and %d, want the same cached token", firstGen, secondGen)
+	}
+
+	// The first caller's request 401s and it invalidates, forcing a refresh.
+	ts.invalidateGeneration(firstGen)
+	refreshed, refreshedGen, err := ts.tokenWithGeneration(context.Background())
+	if err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	if refreshedGen == firstGen {
+		t.Fatal("a refresh must advance the generation")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("exchanges: got %d, want 2", calls.Load())
+	}
+
+	// The second caller's 401 arrives late, naming the token already discarded.
+	// It must be a no-op rather than throwing away the replacement.
+	ts.invalidateGeneration(secondGen)
+
+	after, afterGen, err := ts.tokenWithGeneration(context.Background())
+	if err != nil {
+		t.Fatalf("token after the late invalidation: %v", err)
+	}
+	if afterGen != refreshedGen || after != refreshed {
+		t.Errorf("late invalidation evicted the newer token: got generation %d, want %d", afterGen, refreshedGen)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("exchanges: got %d, want 2 — the late invalidation must not force another", got)
+	}
+	if first == "" {
+		t.Error("expected a non-empty first token")
+	}
+}
+
 // A cold TokenSource hit by many goroutines must spend one quota call, not one
 // per goroutine.
 func TestConcurrentTokenCallsExchangeOnce(t *testing.T) {

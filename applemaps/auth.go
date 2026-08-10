@@ -33,6 +33,10 @@ const (
 	// treated as stale. Apple issues 30-minute tokens, so 5 minutes leaves room
 	// for a slow request to complete on a token that was valid when it started.
 	tokenRefreshMargin = 5 * time.Minute
+
+	// defaultTokenTTL stands in when a token response states no usable lifetime.
+	// Apple is observed to issue 1800 seconds.
+	defaultTokenTTL = 30 * time.Minute
 )
 
 // ParsePrivateKey parses the ECDSA private key from an Apple Maps .p8 file.
@@ -108,6 +112,11 @@ type TokenSource struct {
 	mu     sync.Mutex
 	token  string
 	expiry time.Time
+	// refreshAt is when the cached token stops being handed out. It is computed
+	// once, at exchange time, rather than derived from expiry on every read,
+	// because the margin it subtracts depends on the lifetime Apple stated for
+	// that particular token.
+	refreshAt time.Time
 	// generation identifies the current cached token. It increments on every
 	// successful exchange so a caller holding a token that failed can ask for it
 	// to be discarded without discarding whatever replaced it.
@@ -164,7 +173,7 @@ func (ts *TokenSource) tokenWithGeneration(ctx context.Context) (string, uint64,
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 
-	if ts.token != "" && ts.now().Before(ts.expiry.Add(-tokenRefreshMargin)) {
+	if ts.token != "" && ts.now().Before(ts.refreshAt) {
 		return ts.token, ts.generation, nil
 	}
 	token, err := ts.exchangeLocked(ctx)
@@ -205,6 +214,7 @@ func (ts *TokenSource) invalidateGeneration(generation uint64) {
 func (ts *TokenSource) clearLocked() {
 	ts.token = ""
 	ts.expiry = time.Time{}
+	ts.refreshAt = time.Time{}
 	// The generation advances so an invalidateGeneration racing on the token just
 	// dropped does not go on to clear its replacement.
 	ts.generation++
@@ -266,8 +276,32 @@ func (ts *TokenSource) exchangeLocked(ctx context.Context) (string, error) {
 		return "", errors.New("applemaps: token response contained no access token")
 	}
 
+	now := ts.now()
+	ttl := time.Duration(parsed.ExpiresInSeconds) * time.Second
+
+	// A response that states no usable lifetime must not be taken at face value.
+	// Trusting it would put expiry at or before now, which is inside the refresh
+	// margin, so every subsequent call would treat the token as stale and
+	// exchange again — turning one malformed field into a permanent doubling of
+	// quota consumption on a budget shared with MapKit JS. Apple issues 1800
+	// seconds; assume that and let the 401 path correct us if the token really
+	// was shorter-lived.
+	if ttl <= 0 {
+		ttl = defaultTokenTTL
+	}
+
+	// A stated lifetime shorter than twice the margin would leave no window to
+	// hand the token out in. Halving it keeps the token cacheable while still
+	// refreshing early, rather than subtracting a fixed margin that the lifetime
+	// cannot cover.
+	margin := tokenRefreshMargin
+	if margin > ttl/2 {
+		margin = ttl / 2
+	}
+
 	ts.token = parsed.AccessToken
-	ts.expiry = ts.now().Add(time.Duration(parsed.ExpiresInSeconds) * time.Second)
+	ts.expiry = now.Add(ttl)
+	ts.refreshAt = now.Add(ttl - margin)
 	ts.generation++
 	return ts.token, nil
 }
