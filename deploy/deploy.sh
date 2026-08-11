@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Runs ON the VM as root. Usage: deploy.sh <IMAGE_TAG>
+set -euo pipefail
+
+IMAGE_TAG="${1:?usage: deploy.sh <image-tag>}"
+PLANNER_DIR="/opt/planner"
+METADATA="http://metadata.google.internal/computeMetadata/v1"
+PROJECT_ID="$(curl -sf -H 'Metadata-Flavor: Google' "$METADATA/project/project-id")"
+REGION="us-central1"
+IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/planner/backend"
+SECRET_NAMES=(MAPS_CLIENT_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET \
+  JWT_SIGNING_SECRET SENDGRID_API_KEY OPENAI_API_KEY GEONAMES_API_KEY \
+  AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY)
+
+token() {
+  curl -sf -H 'Metadata-Flavor: Google' \
+    "$METADATA/instance/service-accounts/default/token" | jq -r .access_token
+}
+
+# 1. registry login with the VM service account
+token | docker login -u oauth2accesstoken --password-stdin "https://${REGION}-docker.pkg.dev"
+
+# 2. render .env = committed non-secret env + secrets from Secret Manager
+ENV_FILE="${PLANNER_DIR}/.env"
+TMP_ENV="$(mktemp)"
+trap 'rm -f "$TMP_ENV"' EXIT
+cat "${PLANNER_DIR}/env.production" > "$TMP_ENV"
+{
+  echo "IMAGE_URI=${IMAGE_URI}"
+  echo "IMAGE_TAG=${IMAGE_TAG}"
+} >> "$TMP_ENV"
+ACCESS_TOKEN="$(token)"
+for name in "${SECRET_NAMES[@]}"; do
+  value="$(curl -sf -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+    "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/${name}/versions/latest:access" \
+    | jq -r .payload.data | base64 -d)"
+  echo "${name}=${value}" >> "$TMP_ENV"
+done
+install -m 600 "$TMP_ENV" "$ENV_FILE"
+
+# 3. pull and swap the web container (redis/caddy untouched unless their config changed)
+cd "$PLANNER_DIR"
+docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml pull web
+docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml up -d --remove-orphans
+
+# 4. verify
+sleep 5
+docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml ps
+curl -sf -o /dev/null http://localhost:80 || { echo 'DEPLOY VERIFY FAILED'; exit 1; }
+docker image prune -af --filter "until=168h"
+echo "deployed ${IMAGE_URI}:${IMAGE_TAG}"
