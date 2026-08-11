@@ -1,12 +1,15 @@
-FROM golang:1.21-alpine
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -o /out/vacation-planner .
 
-ENV GO111MODULE=on
-
-COPY . /app/
-WORKDIR /app/
-
-RUN go build -v .
-
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
+WORKDIR /app
+COPY --from=build /out/vacation-planner ./vacation-planner
+COPY config/ ./config/
+COPY assets/ ./assets/
 EXPOSE 10000
-
-CMD ["./Vacation-planner"]
+CMD ["./vacation-planner"]
