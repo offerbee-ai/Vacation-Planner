@@ -49,16 +49,32 @@ docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml pul
 docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml up -d --remove-orphans
 
 # 4. verify
-sleep 5
 docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml ps
-if ! curl -sfS -o /dev/null http://localhost:80; then
-  echo "DEPLOY VERIFY FAILED for ${IMAGE_URI}:${IMAGE_TAG}" >&2
-  if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$IMAGE_TAG" ]; then
-    echo "rolling back to ${PREV_TAG}" >&2
-    sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${PREV_TAG}|" "$ENV_FILE"
-    docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml up -d
+
+verify_web() {
+  docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml \
+    exec -T web wget -qO- http://localhost:10000/ >/dev/null 2>&1
+}
+
+echo "waiting for web to pass app-level verify..."
+attempts=0
+until verify_web; do
+  attempts=$((attempts + 1))
+  if [ "$attempts" -ge 12 ]; then
+    echo "DEPLOY VERIFY FAILED for ${IMAGE_URI}:${IMAGE_TAG}" >&2
+    if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$IMAGE_TAG" ]; then
+      echo "rolling back to ${PREV_TAG}" >&2
+      sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${PREV_TAG}|" "$ENV_FILE"
+      docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml up -d --remove-orphans
+      if verify_web; then
+        echo "rollback to ${PREV_TAG} verified healthy" >&2
+      else
+        echo "ROLLBACK VERIFY FAILED - manual intervention required" >&2
+      fi
+    fi
+    exit 1
   fi
-  exit 1
-fi
+  sleep 5
+done
 docker image prune -af --filter "until=168h" || true
 echo "deployed ${IMAGE_URI}:${IMAGE_TAG}"

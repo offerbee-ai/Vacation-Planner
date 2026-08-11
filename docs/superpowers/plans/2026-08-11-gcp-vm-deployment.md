@@ -43,7 +43,7 @@ STATIC_IP_NAME="planner-ip"
 - VM paths: stack lives in `/opt/planner/` (`docker-compose.prod.yml`, `Caddyfile`, `deploy.sh`, `env.production`, generated `.env`); Redis data in `/var/lib/planner/redis/`.
 - Secret Manager secret names (exact, used by bootstrap AND deploy.sh — the two lists must stay identical):
   `MAPS_CLIENT_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET JWT_SIGNING_SECRET SENDGRID_API_KEY OPENAI_API_KEY GEONAMES_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY`
-- Non-secret env (committed in `deploy/env.production`): `ENVIRONMENT=production`, `PORT=10000`, `REDIS_URL=redis://redis:6379`, `DOMAIN`, `FRONTEND_URL`, `BACKEND_URL`, `ADMIN_USERS`, `MAILER_EMAIL_ADDRESS`, `BLOB_BUCKET_ID`.
+- Non-secret env (committed in `deploy/env.production`): `ENVIRONMENT=production`, `PORT=10000`, `REDIS_URL=redis://redis:6379`, `DOMAIN`, `FRONTEND_URL`, `BACKEND_URL`, `ADMIN_USERS`, `MAILER_EMAIL_ADDRESS`, `BLOB_BUCKET_ID`, `AWS_REGION`.
 - GitHub repo variables (Task 8): `GCP_PROJECT`, `GCP_WIF_PROVIDER`, `GCP_DEPLOYER_SA`, `GCP_ZONE`, `GCP_VM`, `GCP_IMAGE`.
 
 ---
@@ -191,6 +191,7 @@ BACKEND_URL=https://<api domain>
 ADMIN_USERS=<comma-separated admin emails>
 MAILER_EMAIL_ADDRESS=<sender email>
 BLOB_BUCKET_ID=<existing S3 bucket name>
+AWS_REGION=<S3 bucket region, e.g. us-east-1>
 ```
 
 (The `<...>` values are operator configuration copied from Heroku `heroku config -s` output in Task 5 — fill them in the same session that runs bootstrap.)
@@ -241,6 +242,8 @@ git commit -m "feat(deploy): production compose stack (caddy + web + persistent 
 ### Task 3: VM scripts — `deploy.sh` and `startup-script.sh`
 
 > **Amendment (2026-08-11, review ruling):** the committed `deploy/deploy.sh` deviates from the snippet below in four reviewer-driven, human-approved ways: atomic `.env` render (`mktemp` beside the target + `chmod 600` + `mv` instead of `install` from `/tmp`); automatic rollback to the previous `IMAGE_TAG` when the post-deploy verify fails; `curl -sfS` everywhere with the failing secret's name printed to stderr; `docker image prune ... || true`. The committed file is authoritative.
+
+> **Final-review amendments (2026-08-11):** deploy.sh's verify now gates on an app-level check (`compose exec web wget` against :10000) with a 60s retry loop and a re-verified rollback; `deploy/env.production` and the env contract gained `AWS_REGION`; the bootstrap grants the deployer SA `roles/iam.serviceAccountUser` on the runtime SA (required for CI `gcloud compute ssh`); all three compose services carry json-file log rotation (10m×3).
 
 **Files:**
 - Create: `deploy/deploy.sh`
@@ -513,7 +516,7 @@ Expected: PR opens, Go CI runs and passes (no Go changes). Merge before Task 5.
 - Consumes: `deploy/gcp-bootstrap.sh` from merged main.
 - Produces: live infra + populated secrets + filled `deploy/env.production` values (committed).
 
-- [ ] **Step 1: Edit script header** — set `PROJECT_ID` and `DOMAIN` in `deploy/gcp-bootstrap.sh`; also fill the `<...>` values in `deploy/env.production` from `heroku config -s` output. Commit directly to a small PR or with the next task's PR.
+- [ ] **Step 1: Edit script header** — set `PROJECT_ID` and `DOMAIN` in `deploy/gcp-bootstrap.sh`; also fill the `<...>` values in `deploy/env.production` from `heroku config -s` output (including `AWS_REGION` — the S3 SDK has no region source on GCE; without it every blob call fails at request time). Commit directly to a small PR or with the next task's PR.
 
 - [ ] **Step 2: Run it**
 

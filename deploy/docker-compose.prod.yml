@@ -13,6 +13,11 @@ services:
       - caddy_config:/config
     depends_on:
       - web
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   web:
     image: ${IMAGE_URI}:${IMAGE_TAG}
@@ -25,6 +30,11 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
@@ -32,6 +42,11 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "768mb", "--maxmemory-policy", "noeviction"]
     volumes:
       - /var/lib/planner/redis:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   caddy_data:

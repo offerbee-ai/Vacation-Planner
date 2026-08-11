@@ -68,6 +68,8 @@ for role in roles/artifactregistry.writer roles/compute.osAdminLogin \
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member="serviceAccount:${DEPLOYER_SA}" --role="$role" --condition=None >/dev/null
 done
+gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+  --member="serviceAccount:${DEPLOYER_SA}" --role=roles/iam.serviceAccountUser >/dev/null
 
 echo '--- 6. Network: static IP + firewall'
 gcloud compute addresses describe "$STATIC_IP_NAME" --region="$REGION" >/dev/null 2>&1 || \
