@@ -41,6 +41,11 @@ for name in "${SECRET_NAMES[@]}"; do
   echo "${name}=${value}" >> "$TMP_ENV"
 done
 chmod 600 "$TMP_ENV"
+# keep the last-known-good env until this deploy verifies, so rollback can
+# restore configuration (not just the image tag)
+if [ -f "$ENV_FILE" ]; then
+  cp -p "$ENV_FILE" "${ENV_FILE}.prev"
+fi
 mv "$TMP_ENV" "$ENV_FILE"
 
 # 3. pull and swap the web container (redis/caddy untouched unless their config changed)
@@ -56,25 +61,39 @@ verify_web() {
     exec -T web wget -qO- http://localhost:10000/healthz >/dev/null 2>&1
 }
 
-echo "waiting for web to pass app-level verify..."
-attempts=0
-until verify_web; do
-  attempts=$((attempts + 1))
-  if [ "$attempts" -ge 12 ]; then
-    echo "DEPLOY VERIFY FAILED for ${IMAGE_URI}:${IMAGE_TAG}" >&2
-    if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$IMAGE_TAG" ]; then
-      echo "rolling back to ${PREV_TAG}" >&2
-      sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${PREV_TAG}|" "$ENV_FILE"
-      docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml up -d --remove-orphans
-      if verify_web; then
-        echo "rollback to ${PREV_TAG} verified healthy" >&2
-      else
-        echo "ROLLBACK VERIFY FAILED - manual intervention required" >&2
-      fi
+# verify_with_retry ATTEMPTS: poll verify_web every 5s, fail after ATTEMPTS
+verify_with_retry() {
+  local max="$1" tries=0
+  until verify_web; do
+    tries=$((tries + 1))
+    if [ "$tries" -ge "$max" ]; then
+      return 1
     fi
-    exit 1
+    sleep 5
+  done
+}
+
+echo "waiting for web to pass app-level verify..."
+if ! verify_with_retry 12; then
+  echo "DEPLOY VERIFY FAILED for ${IMAGE_URI}:${IMAGE_TAG}" >&2
+  if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$IMAGE_TAG" ]; then
+    echo "rolling back to ${PREV_TAG}" >&2
+    # restore the complete last-known-good env (config and secrets, not just
+    # the tag) — a failed deploy may have been caused by changed env values
+    if [ -f "${ENV_FILE}.prev" ]; then
+      cp -p "${ENV_FILE}.prev" "$ENV_FILE"
+    else
+      sed -i "s|^IMAGE_TAG=.*|IMAGE_TAG=${PREV_TAG}|" "$ENV_FILE"
+    fi
+    docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml up -d --remove-orphans
+    if verify_with_retry 6; then
+      echo "rollback to ${PREV_TAG} verified healthy" >&2
+    else
+      echo "ROLLBACK VERIFY FAILED - manual intervention required" >&2
+    fi
   fi
-  sleep 5
-done
+  exit 1
+fi
+rm -f "${ENV_FILE}.prev"
 docker image prune -af --filter "until=168h" || true
 echo "deployed ${IMAGE_URI}:${IMAGE_TAG}"

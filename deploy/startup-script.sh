@@ -4,9 +4,12 @@ set -euo pipefail
 
 mkdir -p /opt/planner /var/lib/planner/redis
 
+# base tools install independently of docker, so a preinstalled docker can
+# never mask a missing jq or unattended-upgrades
+apt-get update
+apt-get install -y ca-certificates curl gnupg jq unattended-upgrades
+
 if ! command -v docker >/dev/null 2>&1; then
-  apt-get update
-  apt-get install -y ca-certificates curl gnupg jq unattended-upgrades
   install -m 0755 -d /etc/apt/keyrings
   curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
   # shellcheck disable=SC1091

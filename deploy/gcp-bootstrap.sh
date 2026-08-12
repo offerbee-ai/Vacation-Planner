@@ -126,7 +126,7 @@ gcloud compute firewall-rules describe allow-planner-web >/dev/null 2>&1 || \
     --allow=tcp:80,tcp:443 --target-tags=planner-web --source-ranges=0.0.0.0/0
 gcloud compute firewall-rules describe allow-iap-ssh >/dev/null 2>&1 || \
   gcloud compute firewall-rules create allow-iap-ssh \
-    --allow=tcp:22 --source-ranges=35.235.240.0/20
+    --allow=tcp:22 --source-ranges=35.235.240.0/20 --target-tags=planner-web
 
 echo '--- 7. VM'
 gcloud compute instances describe "$VM_NAME" --zone="$ZONE" >/dev/null 2>&1 || \
