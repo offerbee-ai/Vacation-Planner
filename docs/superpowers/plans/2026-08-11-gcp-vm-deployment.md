@@ -25,8 +25,8 @@
 ```bash
 # deployment parameters — the ONLY values the operator edits, set in deploy/gcp-bootstrap.sh header
 PROJECT_ID="<your-gcp-project>"          # fill in before Task 5
-REGION="us-central1"
-ZONE="us-central1-a"
+REGION="us-west1"
+ZONE="us-west1-a"
 DOMAIN="<api domain, e.g. api.offerbee.ai>"  # fill in before Task 5
 
 # derived / fixed names — never edit
@@ -264,7 +264,7 @@ IMAGE_TAG="${1:?usage: deploy.sh <image-tag>}"
 PLANNER_DIR="/opt/planner"
 METADATA="http://metadata.google.internal/computeMetadata/v1"
 PROJECT_ID="$(curl -sf -H 'Metadata-Flavor: Google' "$METADATA/project/project-id")"
-REGION="us-central1"
+REGION="us-west1"
 IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/planner/backend"
 SECRET_NAMES=(MAPS_CLIENT_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET \
   JWT_SIGNING_SECRET SENDGRID_API_KEY OPENAI_API_KEY GEONAMES_API_KEY \
@@ -375,8 +375,8 @@ set -euo pipefail
 
 PROJECT_ID="<your-gcp-project>"   # EDIT ME
 DOMAIN="<api domain>"             # EDIT ME (informational; used in final output)
-REGION="us-central1"
-ZONE="us-central1-a"
+REGION="us-west1"
+ZONE="us-west1-a"
 VM_NAME="planner-vm"
 AR_REPO="planner"
 RUNTIME_SA_NAME="planner-vm-sa"
@@ -546,7 +546,7 @@ New values take effect on the next `deploy.sh` run (it re-renders `/opt/planner/
 - [ ] **Step 4: Verify VM provisioned**
 
 ```bash
-gcloud compute ssh planner-vm --zone=us-central1-a --tunnel-through-iap \
+gcloud compute ssh planner-vm --zone=us-west1-a --tunnel-through-iap \
   --command='docker --version && jq --version && ls -ld /opt/planner /var/lib/planner/redis'
 ```
 
@@ -567,19 +567,19 @@ Expected: docker + jq versions print; both directories exist. (Startup script ne
 ```bash
 git checkout main && git pull
 SHA="$(git rev-parse HEAD)"
-gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
-docker build -t "us-central1-docker.pkg.dev/${PROJECT_ID}/planner/backend:${SHA}" .
-docker push "us-central1-docker.pkg.dev/${PROJECT_ID}/planner/backend:${SHA}"
+gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+docker build -t "us-west1-docker.pkg.dev/${PROJECT_ID}/planner/backend:${SHA}" .
+docker push "us-west1-docker.pkg.dev/${PROJECT_ID}/planner/backend:${SHA}"
 ```
 
 - [ ] **Step 2: Ship deploy files and run deploy.sh (same 3 commands CI uses)**
 
 ```bash
-gcloud compute ssh planner-vm --zone=us-central1-a --tunnel-through-iap \
+gcloud compute ssh planner-vm --zone=us-west1-a --tunnel-through-iap \
   --command='mkdir -p /tmp/planner-deploy'
 gcloud compute scp deploy/docker-compose.prod.yml deploy/Caddyfile deploy/env.production \
-  deploy/deploy.sh planner-vm:/tmp/planner-deploy/ --zone=us-central1-a --tunnel-through-iap
-gcloud compute ssh planner-vm --zone=us-central1-a --tunnel-through-iap \
+  deploy/deploy.sh planner-vm:/tmp/planner-deploy/ --zone=us-west1-a --tunnel-through-iap
+gcloud compute ssh planner-vm --zone=us-west1-a --tunnel-through-iap \
   --command="sudo bash -c 'cp /tmp/planner-deploy/* /opt/planner/ && bash /opt/planner/deploy.sh ${SHA}'"
 ```
 
@@ -588,7 +588,7 @@ Expected: ends with `deployed ...:<sha>`; `docker compose ps` shows caddy/web/re
 - [ ] **Step 3: Verify from outside**
 
 ```bash
-STATIC_IP="$(gcloud compute addresses describe planner-ip --region=us-central1 --format='value(address)')"
+STATIC_IP="$(gcloud compute addresses describe planner-ip --region=us-west1 --format='value(address)')"
 curl -s -o /dev/null -w '%{http_code}\n' "http://${STATIC_IP}/"
 ```
 
@@ -637,9 +637,9 @@ on:
 gh variable set GCP_PROJECT --body "<your-gcp-project>"
 gh variable set GCP_WIF_PROVIDER --body "projects/<project-number>/locations/global/workloadIdentityPools/github/providers/github-provider"
 gh variable set GCP_DEPLOYER_SA --body "github-deployer@<your-gcp-project>.iam.gserviceaccount.com"
-gh variable set GCP_ZONE --body "us-central1-a"
+gh variable set GCP_ZONE --body "us-west1-a"
 gh variable set GCP_VM --body "planner-vm"
-gh variable set GCP_IMAGE --body "us-central1-docker.pkg.dev/<your-gcp-project>/planner/backend"
+gh variable set GCP_IMAGE --body "us-west1-docker.pkg.dev/<your-gcp-project>/planner/backend"
 ```
 
 - [ ] **Step 3: Write `.github/workflows/deploy.yml`**
@@ -688,7 +688,7 @@ jobs:
       - name: Build and push image
         if: inputs.tag == ''
         run: |
-          gcloud auth configure-docker us-central1-docker.pkg.dev --quiet
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
           docker build -t "${{ vars.GCP_IMAGE }}:${{ steps.tag.outputs.tag }}" .
           docker push "${{ vars.GCP_IMAGE }}:${{ steps.tag.outputs.tag }}"
 
@@ -756,7 +756,7 @@ Record the DBSIZE number. If Heroku blocks `SYNC` (Option A errors), use Option 
 ```bash
 brew install riot
 # expose VM redis to your laptop only, via IAP tunnel + temporary localhost publish:
-gcloud compute ssh planner-vm --zone=us-central1-a --tunnel-through-iap -- -N -L 6380:localhost:6379 &
+gcloud compute ssh planner-vm --zone=us-west1-a --tunnel-through-iap -- -N -L 6380:localhost:6379 &
 # on the VM, temporarily add `ports: ["127.0.0.1:6379:6379"]` to the redis service, `docker compose up -d redis`
 riot replicate --mode snapshot "$(heroku config:get REDIS_TLS_URL -a <heroku-app-name>)" redis://localhost:6380
 # remove the temporary ports mapping afterwards and `docker compose up -d redis`
@@ -764,7 +764,7 @@ riot replicate --mode snapshot "$(heroku config:get REDIS_TLS_URL -a <heroku-app
 
 If Option B was used, skip to Step 5 (data already in the VM Redis); the DBSIZE check in Step 5 still applies.
 
-- [ ] **Step 3: Load the RDB into the VM Redis (Option A path).** On the VM (`gcloud compute ssh planner-vm --zone=us-central1-a --tunnel-through-iap` after `gcloud compute scp /tmp/heroku-dump.rdb planner-vm:/tmp/ ...`), run exactly this sequence:
+- [ ] **Step 3: Load the RDB into the VM Redis (Option A path).** On the VM (`gcloud compute ssh planner-vm --zone=us-west1-a --tunnel-through-iap` after `gcloud compute scp /tmp/heroku-dump.rdb planner-vm:/tmp/ ...`), run exactly this sequence:
 
 ```bash
 cd /opt/planner
@@ -794,7 +794,7 @@ docker compose -f docker-compose.prod.yml exec redis redis-cli DBSIZE   # must m
 - [ ] **Step 6: Verify DBSIZE parity + traffic in logs**
 
 ```bash
-gcloud compute ssh planner-vm --zone=us-central1-a --tunnel-through-iap \
+gcloud compute ssh planner-vm --zone=us-west1-a --tunnel-through-iap \
   --command='cd /opt/planner && docker compose -f docker-compose.prod.yml logs --since 10m web | tail -20'
 ```
 

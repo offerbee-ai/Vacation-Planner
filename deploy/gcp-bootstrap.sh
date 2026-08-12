@@ -5,8 +5,8 @@ set -euo pipefail
 
 PROJECT_ID="offerbee-planner"
 DOMAIN="<api domain>"             # EDIT ME (informational; used in final output)
-REGION="us-central1"
-ZONE="us-central1-a"
+REGION="us-west1"
+ZONE="us-west1-a"
 VM_NAME="planner-vm"
 AR_REPO="planner"
 RUNTIME_SA_NAME="planner-vm-sa"

@@ -6,7 +6,7 @@ IMAGE_TAG="${1:?usage: deploy.sh <image-tag>}"
 PLANNER_DIR="/opt/planner"
 METADATA="http://metadata.google.internal/computeMetadata/v1"
 PROJECT_ID="$(curl -sfS -H 'Metadata-Flavor: Google' "$METADATA/project/project-id")"
-REGION="us-central1"
+REGION="us-west1"
 IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/planner/backend"
 SECRET_NAMES=(MAPS_CLIENT_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET \
   JWT_SIGNING_SECRET SENDGRID_API_KEY OPENAI_API_KEY GEONAMES_API_KEY \
