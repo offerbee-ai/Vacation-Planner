@@ -364,6 +364,9 @@ func restoreCachedDetails(places []POI.Place, cached map[string]POI.Place) {
 		if places[i].Address == (POI.Address{}) {
 			places[i].Address = stored.Address
 		}
+		if places[i].LocationType == POI.LocationTypeAny {
+			places[i].LocationType = stored.LocationType
+		}
 		if !places[i].HasRealOpeningHours() && stored.HasRealOpeningHours() {
 			places[i].Hours = stored.Hours
 		}
@@ -501,6 +504,14 @@ func parsePlacesSearchResponse(resp maps.PlacesSearchResponse, locationType POI.
 		// Preserve Google's actual feature types so callers can classify the place by
 		// its primary function, not the type this search happened to query for.
 		place.Types = res.Types
+		// Keyword (brand) searches query with LocationTypeAny, so the searched-type
+		// stamp above is blank — and the blind-upsert write path would cache (and
+		// overwrite typed records with) LocationType "". Derive the real type from
+		// the place's primary Google feature type instead. Typed searches keep their
+		// stamp: re-tagging those is ReclassifyForCategory's job on the category paths.
+		if locationType == POI.LocationTypeAny {
+			place.LocationType = POI.PrimaryLocationType(place.Types)
+		}
 		places = append(places, place)
 	}
 	return
