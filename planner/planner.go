@@ -593,6 +593,12 @@ func (p *MyPlanner) searchPageHandler(ctx *gin.Context) {
 	ctx.HTML(http.StatusOK, "search_page.html", gin.H{})
 }
 
+// healthz answers container and deploy health probes. It is registered
+// before the rate-limiter middleware so probes never consume client budget.
+func (p *MyPlanner) healthz(c *gin.Context) {
+	c.String(http.StatusOK, "ok")
+}
+
 func (p *MyPlanner) homePageHandler(ctx *gin.Context) {
 	ctx.Redirect(http.StatusMovedPermanently, "/v1/")
 }
@@ -1815,6 +1821,9 @@ func (p *MyPlanner) SetupRouter(serverPort string) *http.Server {
 	// TODO: change to front-end domain once front-end server is deployed
 	myRouter.ForwardedByClientIP = true
 	myRouter.Use(cors.Default())
+
+	// registered before the rate limiter: health probes are exempt from it
+	myRouter.GET("/healthz", p.healthz)
 
 	// Only apply rate limiting in non-development environments
 	if p.Environment != DevelopmentEnvironment {

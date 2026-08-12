@@ -53,7 +53,7 @@ docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml ps
 
 verify_web() {
   docker compose --project-directory "$PLANNER_DIR" -f docker-compose.prod.yml \
-    exec -T web wget -qO- http://localhost:10000/ >/dev/null 2>&1
+    exec -T web wget -qO- http://localhost:10000/healthz >/dev/null 2>&1
 }
 
 echo "waiting for web to pass app-level verify..."
