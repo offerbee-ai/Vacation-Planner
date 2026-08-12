@@ -508,39 +508,40 @@ Expected: PR opens, Go CI runs and passes (no Go changes). Merge before Task 5.
 
 ---
 
-### Task 5: Run bootstrap + load secrets  *(operator task — needs `gcloud auth login` as tim@uare.ai and Heroku access)*
+### Task 5: Create project, run bootstrap, seed secrets  *(operator task — needs `gcloud auth login` as tim@uare.ai)*
 
 **Files:** none (cloud state only)
 
 **Interfaces:**
 - Consumes: `deploy/gcp-bootstrap.sh` from merged main.
-- Produces: live infra + populated secrets + filled `deploy/env.production` values (committed).
+- Produces: live infra + seeded secrets. No Heroku access needed (ruling 2026-08-11: Heroku config is irrelevant except `MAPS_CLIENT_API_KEY`).
 
-- [ ] **Step 1: Edit script header** — set `PROJECT_ID` and `DOMAIN` in `deploy/gcp-bootstrap.sh`; also fill the `<...>` values in `deploy/env.production` from `heroku config -s` output (including `AWS_REGION` — the S3 SDK has no region source on GCE; without it every blob call fails at request time). Commit directly to a small PR or with the next task's PR.
-
-- [ ] **Step 2: Run it**
+- [ ] **Step 0: Create the project and link billing** (brand-new GCP project)
 
 ```bash
 gcloud auth login
-bash deploy/gcp-bootstrap.sh
+gcloud projects create <your-gcp-project>
+gcloud billing accounts list
+gcloud billing projects link <your-gcp-project> --billing-account=<BILLING_ACCOUNT_ID>
 ```
 
-Expected: ends with the `Bootstrap complete` summary block. Rerun is safe.
+- [ ] **Step 1: Edit config** — set `PROJECT_ID` and `DOMAIN` in `deploy/gcp-bootstrap.sh`; fill the `<...>` values in `deploy/env.production` with fresh choices (domains, admin emails, mailer address). `BLOB_BUCKET_ID`/`AWS_REGION` only matter if S3 blob storage will be used — placeholders are fine until then (blob endpoints just stay non-functional). Commit these edits.
 
-- [ ] **Step 3: Load secret values from Heroku**
+- [ ] **Step 2: Run bootstrap**
 
 ```bash
-heroku config -s -a <heroku-app-name> > /tmp/heroku.env   # then, per secret:
-for name in MAPS_CLIENT_API_KEY GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET \
-            JWT_SIGNING_SECRET SENDGRID_API_KEY OPENAI_API_KEY GEONAMES_API_KEY \
-            AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
-  val="$(grep "^${name}=" /tmp/heroku.env | cut -d= -f2- | tr -d \"'\")"
-  [ -n "$val" ] && printf '%s' "$val" | gcloud secrets versions add "$name" --data-file=-
-done
-rm /tmp/heroku.env
+MAPS_CLIENT_API_KEY='<your existing Maps key>' bash deploy/gcp-bootstrap.sh
 ```
 
-Expected: one `Created version [1]` per secret. Any secret Heroku doesn't have (e.g. new JWT secret): generate — `openssl rand -base64 48 | tr -d '\n' | gcloud secrets versions add JWT_SIGNING_SECRET --data-file=-`.
+Seeds automatically: `JWT_SIGNING_SECRET` (generated), `MAPS_CLIENT_API_KEY` (from env or interactive prompt), and `changeme` placeholders for the optional integrations (OAuth, SendGrid, OpenAI, Geonames, AWS). Ends with the `Bootstrap complete` summary block. Rerun is safe — seeded values are never overwritten.
+
+- [ ] **Step 3: (later, per feature) set real values for optional integrations**
+
+```bash
+printf '%s' 'REAL_VALUE' | gcloud secrets versions add GOOGLE_OAUTH_CLIENT_SECRET --data-file=-
+```
+
+New values take effect on the next `deploy.sh` run (it re-renders `/opt/planner/.env`).
 
 - [ ] **Step 4: Verify VM provisioned**
 
@@ -603,7 +604,7 @@ Expected: `308` or `200` (Caddy redirects HTTP→HTTPS for the configured domain
 
 - [ ] **Step 2: Wait for cert** — Caddy auto-issues once DNS resolves. Verify: `curl -sfL -o /dev/null -w '%{http_code}\n' https://<api domain>/` → `200`.
 
-- [ ] **Step 3: Google OAuth** — in Google Cloud Console → APIs & Services → Credentials → the existing OAuth client: add authorized redirect URI `https://<api domain>/v1/callback-google` (route: `planner/planner.go:1843`). Keep the Heroku URI until Task 9 cutover completes.
+- [ ] **Step 3: Google OAuth** — in Google Cloud Console → APIs & Services → Credentials → the existing OAuth client: add authorized redirect URI `https://<api domain>/v1/callback-google` (route: `planner/planner.go:1843`). Keep the Heroku URI until Task 9 cutover completes. On a brand-new project with no OAuth client yet: create the consent screen + OAuth client in the new project's console first, seed `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET` via `gcloud secrets versions add`, and rerun `deploy.sh` — Google login stays non-functional (placeholder credentials) until then.
 
 - [ ] **Step 4: Verify login flow** — browser: `https://<api domain>/v1/login-google` completes Google sign-in and lands back on the site.
 
@@ -733,6 +734,8 @@ Expected: deploy job green — redeploys the older image without building.
 ---
 
 ### Task 9: Migrate Redis data from Heroku and cut over  *(operator task; maintenance window)*
+
+> **Skip ruling (2026-08-11):** Heroku data does not need to be preserved — the new deployment starts with an empty Redis. Skip this entire task unless that decision is reversed. Kept for reference only.
 
 **Files:** none (runbook)
 

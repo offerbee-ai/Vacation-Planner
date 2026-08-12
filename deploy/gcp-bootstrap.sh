@@ -33,10 +33,42 @@ echo '--- 2. Artifact Registry'
 gcloud artifacts repositories describe "$AR_REPO" --location="$REGION" >/dev/null 2>&1 || \
   gcloud artifacts repositories create "$AR_REPO" --location="$REGION" --repository-format=docker
 
-echo '--- 3. Secrets (empty shells; add values separately)'
+echo '--- 3. Secrets (created, then seeded on first run)'
 for name in "${SECRET_NAMES[@]}"; do
   gcloud secrets describe "$name" >/dev/null 2>&1 || \
     gcloud secrets create "$name" --replication-policy=automatic
+done
+
+# seed_secret NAME VALUE: adds a version only if the secret has none yet,
+# so reruns never overwrite real values.
+seed_secret() {
+  if ! gcloud secrets versions access latest --secret="$1" >/dev/null 2>&1; then
+    printf '%s' "$2" | gcloud secrets versions add "$1" --data-file=-
+  fi
+}
+
+# fresh deployment: JWT signing secret is generated, never migrated
+seed_secret JWT_SIGNING_SECRET "$(openssl rand -base64 48 | tr -d '\n')"
+
+# MAPS_CLIENT_API_KEY is required for core search: taken from the
+# environment, or prompted for when running interactively.
+if ! gcloud secrets versions access latest --secret=MAPS_CLIENT_API_KEY >/dev/null 2>&1; then
+  if [ -n "${MAPS_CLIENT_API_KEY:-}" ]; then
+    seed_secret MAPS_CLIENT_API_KEY "$MAPS_CLIENT_API_KEY"
+  elif [ -t 0 ]; then
+    read -r -p 'Enter MAPS_CLIENT_API_KEY: ' maps_key
+    seed_secret MAPS_CLIENT_API_KEY "$maps_key"
+  else
+    echo 'WARNING: MAPS_CLIENT_API_KEY not seeded (export it and rerun, or add a version manually)' >&2
+  fi
+fi
+
+# optional integrations: seeded with a placeholder so deploys succeed;
+# replace when enabling the feature, then rerun deploy.sh:
+#   printf '%s' 'REAL_VALUE' | gcloud secrets versions add NAME --data-file=-
+for name in GOOGLE_OAUTH_CLIENT_ID GOOGLE_OAUTH_CLIENT_SECRET SENDGRID_API_KEY \
+            OPENAI_API_KEY GEONAMES_API_KEY AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+  seed_secret "$name" 'changeme'
 done
 
 echo '--- 4. Runtime service account'
