@@ -3,7 +3,7 @@
 # Edit the header, then run: bash deploy/gcp-bootstrap.sh
 set -euo pipefail
 
-PROJECT_ID="<your-gcp-project>"   # EDIT ME
+PROJECT_ID="offerbee-planner"
 DOMAIN="<api domain>"             # EDIT ME (informational; used in final output)
 REGION="us-central1"
 ZONE="us-central1-a"
