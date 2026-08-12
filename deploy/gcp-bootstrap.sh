@@ -4,7 +4,7 @@
 set -euo pipefail
 
 PROJECT_ID="offerbee-planner"
-DOMAIN="<api domain>"             # EDIT ME (informational; used in final output)
+DOMAIN="geo.offerbee.ai"
 REGION="us-west1"
 ZONE="us-west1-a"
 VM_NAME="planner-vm"
