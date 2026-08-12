@@ -29,6 +29,9 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          # the workflow never pushes git; don't leave the token in .git/config
+          persist-credentials: false
 
       - name: Resolve and validate image tag
         id: tag
