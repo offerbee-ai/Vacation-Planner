@@ -74,10 +74,13 @@ jobs:
           VM: ${{ vars.GCP_VM }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap \
-            --command='mkdir -p /tmp/planner-deploy'
+          # stage into a fresh per-run dir owned by the deploying OS Login
+          # user; a fixed path (e.g. /tmp/planner-deploy) breaks when a
+          # different user created it first (scp: permission denied)
+          stage=$(gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap \
+            --command='mktemp -d' | tail -1 | tr -d '[:space:]')
           gcloud compute scp deploy/docker-compose.prod.yml deploy/Caddyfile \
             deploy/env.production deploy/deploy.sh \
-            "$VM":/tmp/planner-deploy/ --zone "$ZONE" --tunnel-through-iap
+            "$VM":"$stage"/ --zone "$ZONE" --tunnel-through-iap
           gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap \
-            --command="sudo bash -c 'cp /tmp/planner-deploy/* /opt/planner/ && bash /opt/planner/deploy.sh ${TAG}'"
+            --command="sudo cp '$stage'/* /opt/planner/ && sudo bash /opt/planner/deploy.sh ${TAG}; rm -rf '$stage'"
