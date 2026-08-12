@@ -9,9 +9,9 @@ on:
         description: "Existing image tag to (re)deploy; empty = build current SHA"
         required: false
 
+# default token is read-only; only the deploy job is granted id-token for WIF
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   group: deploy-production
@@ -24,13 +24,22 @@ jobs:
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
 
       - name: Resolve and validate image tag
         id: tag
+        env:
+          # pass untrusted input through the environment, never interpolate it
+          # into the script body — a value like $(cmd) would otherwise run
+          # before the regex check below
+          RAW_TAG: ${{ inputs.tag }}
+          SHA: ${{ github.sha }}
         run: |
-          tag="${{ inputs.tag != '' && inputs.tag || github.sha }}"
+          tag="${RAW_TAG:-$SHA}"
           # tag flows into shell commands below and a docker reference; allow
           # only the characters valid in a docker tag so it cannot inject.
           if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
