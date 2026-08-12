@@ -1,0 +1,71 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag to (re)deploy; empty = build current SHA"
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/go.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve and validate image tag
+        id: tag
+        run: |
+          tag="${{ inputs.tag != '' && inputs.tag || github.sha }}"
+          # tag flows into shell commands below and a docker reference; allow
+          # only the characters valid in a docker tag so it cannot inject.
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+            echo "refusing unsafe image tag: $tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Build and push image
+        if: inputs.tag == ''
+        env:
+          IMAGE: ${{ vars.GCP_IMAGE }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          docker build -t "${IMAGE}:${TAG}" .
+          docker push "${IMAGE}:${TAG}"
+
+      - name: Deploy to VM over IAP
+        env:
+          ZONE: ${{ vars.GCP_ZONE }}
+          VM: ${{ vars.GCP_VM }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap \
+            --command='mkdir -p /tmp/planner-deploy'
+          gcloud compute scp deploy/docker-compose.prod.yml deploy/Caddyfile \
+            deploy/env.production deploy/deploy.sh \
+            "$VM":/tmp/planner-deploy/ --zone "$ZONE" --tunnel-through-iap
+          gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap \
+            --command="sudo bash -c 'cp /tmp/planner-deploy/* /opt/planner/ && bash /opt/planner/deploy.sh ${TAG}'"
