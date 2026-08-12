@@ -164,6 +164,78 @@ func TestSelectPlacesForDetailsSkipsCachedPlaces(t *testing.T) {
 	})
 }
 
+// TestParsePlacesSearchResponseKeywordDerivesLocationType covers the keyword (brand) search
+// path: it queries Google with LocationTypeAny, so stamping results with the searched type
+// caches LocationType "" — and the blind-upsert write path then wipes the type off any
+// previously typed record (a McDonald's cached by an Eatery search served with no type).
+// The parser must fall back to the place's primary Google feature type instead.
+func TestParsePlacesSearchResponseKeywordDerivesLocationType(t *testing.T) {
+	resp := maps.PlacesSearchResponse{
+		Results: []maps.PlacesSearchResult{
+			{
+				Name:             "McDonald's",
+				PlaceID:          "mcd",
+				Geometry:         maps.AddressGeometry{Location: maps.LatLng{Lat: 37.32, Lng: -122.03}},
+				Types:            []string{"meal_takeaway", "food", "point_of_interest", "establishment"},
+				UserRatingsTotal: 100,
+			},
+			{ // umbrella types only: no meaningful primary type to derive
+				Name:             "Mystery Venue",
+				PlaceID:          "untyped",
+				Geometry:         maps.AddressGeometry{Location: maps.LatLng{Lat: 37.33, Lng: -122.04}},
+				Types:            []string{"point_of_interest", "establishment"},
+				UserRatingsTotal: 5,
+			},
+		},
+	}
+
+	t.Run("a keyword search derives the type from the place's primary Google type", func(t *testing.T) {
+		places := parsePlacesSearchResponse(resp, POI.LocationTypeAny, nil, map[string]bool{}, nil, nil)
+		if len(places) != 2 {
+			t.Fatalf("expect 2 places parsed, got %d", len(places))
+		}
+		if places[0].LocationType != POI.LocationTypeMealTakeaway {
+			t.Errorf("LocationType = %q, want %q derived from Types", places[0].LocationType, POI.LocationTypeMealTakeaway)
+		}
+		if places[1].LocationType != POI.LocationTypeAny {
+			t.Errorf("LocationType = %q, want empty when Types has no meaningful primary", places[1].LocationType)
+		}
+	})
+
+	t.Run("a typed search keeps its searched-type stamp", func(t *testing.T) {
+		// Re-tagging typed searches is ReclassifyForCategory's job on the category
+		// paths; the parser must not start second-guessing it here.
+		places := parsePlacesSearchResponse(resp, POI.LocationTypeRestaurant, nil, map[string]bool{}, nil, nil)
+		if places[0].LocationType != POI.LocationTypeRestaurant {
+			t.Errorf("LocationType = %q, want the searched type %q", places[0].LocationType, POI.LocationTypeRestaurant)
+		}
+	})
+}
+
+// TestRestoreCachedDetailsPreservesLocationType covers the other half of the same bug: a
+// keyword result that still ends up untyped (no meaningful Types) must not blank out the
+// LocationType a category search already stored — restore only ever fills a gap.
+func TestRestoreCachedDetailsPreservesLocationType(t *testing.T) {
+	stored := storedPlace("near", time.Now())
+	stored.SetType(POI.LocationTypeRestaurant)
+
+	t.Run("an untyped rebuilt place recovers the stored type", func(t *testing.T) {
+		places := []POI.Place{{ID: "near"}}
+		restoreCachedDetails(places, map[string]POI.Place{"near": stored})
+		if places[0].LocationType != POI.LocationTypeRestaurant {
+			t.Errorf("LocationType = %q, want stored %q", places[0].LocationType, POI.LocationTypeRestaurant)
+		}
+	})
+
+	t.Run("a typed rebuilt place keeps its fresh type", func(t *testing.T) {
+		places := []POI.Place{{ID: "near", LocationType: POI.LocationTypeMealTakeaway}}
+		restoreCachedDetails(places, map[string]POI.Place{"near": stored})
+		if places[0].LocationType != POI.LocationTypeMealTakeaway {
+			t.Errorf("LocationType = %q, want fresh %q kept", places[0].LocationType, POI.LocationTypeMealTakeaway)
+		}
+	})
+}
+
 // TestRestoreCachedDetails pins the half of the optimisation that protects the data: the write
 // path is a blind upsert, so a place whose Details call was skipped must not be written back
 // stripped of the fields it was skipped because of.
