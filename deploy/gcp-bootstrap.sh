@@ -24,6 +24,20 @@ RUNTIME_SA="${RUNTIME_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 DEPLOYER_SA="${DEPLOYER_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 
+# IAM writes can race service-account creation (eventual consistency):
+# retry briefly instead of failing the whole bootstrap.
+retry_iam() {
+  local attempt=0
+  until gcloud "$@" >/dev/null 2>&1; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 6 ]; then
+      echo "IAM binding failed after ${attempt} attempts: gcloud $*" >&2
+      return 1
+    fi
+    sleep 10
+  done
+}
+
 echo '--- 1. APIs'
 gcloud services enable compute.googleapis.com artifactregistry.googleapis.com \
   secretmanager.googleapis.com iam.googleapis.com iamcredentials.googleapis.com \
@@ -76,8 +90,8 @@ gcloud iam service-accounts describe "$RUNTIME_SA" >/dev/null 2>&1 || \
   gcloud iam service-accounts create "$RUNTIME_SA_NAME" --display-name='planner VM runtime'
 for role in roles/secretmanager.secretAccessor roles/artifactregistry.reader \
             roles/logging.logWriter roles/monitoring.metricWriter; do
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${RUNTIME_SA}" --role="$role" --condition=None >/dev/null
+  retry_iam projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${RUNTIME_SA}" --role="$role" --condition=None
 done
 
 echo '--- 5. Deployer SA + Workload Identity Federation'
@@ -92,16 +106,16 @@ gcloud iam workload-identity-pools providers describe "$WIF_PROVIDER" \
     --issuer-uri='https://token.actions.githubusercontent.com' \
     --attribute-mapping='google.subject=assertion.sub,attribute.repository=assertion.repository' \
     --attribute-condition="assertion.repository=='${GITHUB_REPO}'"
-gcloud iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" \
+retry_iam iam service-accounts add-iam-policy-binding "$DEPLOYER_SA" \
   --role=roles/iam.workloadIdentityUser \
-  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}/attribute.repository/${GITHUB_REPO}" >/dev/null
+  --member="principalSet://iam.googleapis.com/projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${WIF_POOL}/attribute.repository/${GITHUB_REPO}"
 for role in roles/artifactregistry.writer roles/compute.osAdminLogin \
             roles/iap.tunnelResourceAccessor roles/compute.viewer; do
-  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
-    --member="serviceAccount:${DEPLOYER_SA}" --role="$role" --condition=None >/dev/null
+  retry_iam projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:${DEPLOYER_SA}" --role="$role" --condition=None
 done
-gcloud iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
-  --member="serviceAccount:${DEPLOYER_SA}" --role=roles/iam.serviceAccountUser >/dev/null
+retry_iam iam service-accounts add-iam-policy-binding "$RUNTIME_SA" \
+  --member="serviceAccount:${DEPLOYER_SA}" --role=roles/iam.serviceAccountUser
 
 echo '--- 6. Network: static IP + firewall'
 gcloud compute addresses describe "$STATIC_IP_NAME" --region="$REGION" >/dev/null 2>&1 || \
