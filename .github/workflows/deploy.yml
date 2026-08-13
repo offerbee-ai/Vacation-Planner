@@ -74,13 +74,37 @@ jobs:
           VM: ${{ vars.GCP_VM }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          # stage into a fresh per-run dir owned by the deploying OS Login
-          # user; a fixed path (e.g. /tmp/planner-deploy) breaks when a
-          # different user created it first (scp: permission denied)
-          stage=$(gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap \
-            --command='mktemp -d' | tail -1 | tr -d '[:space:]')
-          gcloud compute scp deploy/docker-compose.prod.yml deploy/Caddyfile \
+          set -euo pipefail
+          # OS Login key propagation is eventually consistent, so the first
+          # connections of a run intermittently fail with "Permission denied
+          # (publickey)". Retry only the transport-safe, idempotent steps
+          # (key warm-up and scp); run deploy.sh exactly once so a lost SSH
+          # response can never re-trigger a deployment.
+          retry() {
+            local n
+            for n in 1 2 3 4 5; do
+              "$@" && return 0
+              echo "attempt $n failed: $*; retrying in 10s" >&2
+              sleep 10
+            done
+            return 1
+          }
+          ssh_vm() {
+            gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap "$@"
+          }
+
+          # scp lands the files in the deployer's home dir, which is also the
+          # working dir of every ssh --command below, so bare names resolve.
+          staged='docker-compose.prod.yml Caddyfile env.production deploy.sh'
+          # remove staged files on every exit path (success or failure), so a
+          # partial run never leaves them in the deployer's home directory
+          cleanup() { ssh_vm --command="rm -f $staged" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # warm up the OS Login key (idempotent) so the real steps do not race
+          retry ssh_vm --command='true'
+          retry gcloud compute scp deploy/docker-compose.prod.yml deploy/Caddyfile \
             deploy/env.production deploy/deploy.sh \
-            "$VM":"$stage"/ --zone "$ZONE" --tunnel-through-iap
-          gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap \
-            --command="sudo cp '$stage'/* /opt/planner/ && sudo bash /opt/planner/deploy.sh ${TAG}; rm -rf '$stage'"
+            "$VM":./ --zone "$ZONE" --tunnel-through-iap
+          # deployment itself runs once — not retried
+          ssh_vm --command="sudo cp $staged /opt/planner/ && sudo bash /opt/planner/deploy.sh ${TAG}"
