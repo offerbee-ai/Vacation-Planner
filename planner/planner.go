@@ -1792,9 +1792,10 @@ func (p *MyPlanner) RevokePAT(ctx *gin.Context) {
 }
 
 type PATView struct {
-	Name      string `json:"name"`
-	Id        string `json:"id"`
-	ExpiresAt string `json:"expiresAt"`
+	Name          string `json:"name"`
+	Id            string `json:"id"`
+	ExpiresAt     string `json:"expiresAt"`
+	RenewInterval string `json:"renewInterval,omitempty"`
 }
 
 func (p *MyPlanner) ListPATs(ctx *gin.Context) {

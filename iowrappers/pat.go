@@ -21,6 +21,8 @@ type TokenRecord struct {
 	CreatedAt     time.Time     `json:"created_at"`
 	ExpiresAt     *time.Time    `json:"expires_at"`
 	RevokedAt     *time.Time    `json:"revoked_at"`
+	// RenewInterval > 0 makes the token sliding: each authenticated use past the
+	// halfway mark pushes ExpiresAt to now+RenewInterval. 0 = fixed expiry (legacy).
 	RenewInterval time.Duration `json:"renew_interval,omitempty"`
 }
 
@@ -261,7 +263,7 @@ func (r *RedisClient) slidePAT(ctx context.Context, tokenId string) *time.Time {
 		return err
 	}, tokenKey)
 	if err != nil {
-		if !errors.Is(err, redis.TxFailedErr) {
+		if !errors.Is(err, redis.TxFailedErr) && !errors.Is(err, redis.Nil) {
 			Logger.Warnf("failed to slide PAT %s expiration: %v", tokenId, err)
 		}
 		return nil

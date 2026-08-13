@@ -767,6 +767,8 @@ git commit -m "feat(api): add GET /v1/token introspection endpoint"
 
 Not a code task — run per environment, prod last:
 
+**Important:** For steps 1–2 below, authenticate with a separate admin credential (e.g., a short-lived PAT minted via `/v1/login` first, or a JWT session cookie), NOT the token being replaced. The revoked token cannot authenticate step 2.
+
 1. `DELETE https://geo.offerbee.ai/v1/revoke-token` body `{"name": "<env-token-name>"}` with the current token as Bearer (revoke first — `NewPAT` rejects re-minting a name while the old token is valid).
 2. `POST https://geo.offerbee.ai/v1/create-token` body `{"name": "<same-name>", "sliding_interval": "720h"}`.
 3. From `~/code/Offerbee/packages/backend`: `CONVEX_DEPLOYMENT=<id> npx convex env set GEO_SERVICE_TOKEN <new-token>`.

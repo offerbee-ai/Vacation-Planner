@@ -86,6 +86,8 @@ Active OfferBee traffic already renews the token. As pure insurance against long
 
 For each of the three Convex environments (dev `exuberant-minnow-833`, staging `adept-porpoise-776`, prod `handsome-dodo-841`):
 
+**Important:** For steps 1–2 below, authenticate with a separate admin credential (e.g., a short-lived PAT minted via `/v1/login` first, or a JWT session cookie), NOT the token being replaced. The revoked token cannot authenticate step 2.
+
 1. `DELETE /v1/revoke-token` with the current token name (`NewPAT` rejects re-minting a name while the old token is still valid — revoke first).
 2. `POST /v1/create-token` with the same name and `"sliding_interval": "720h"` (30 days).
 3. `CONVEX_DEPLOYMENT=<id> npx convex env set GEO_SERVICE_TOKEN <new-token>` from `~/code/Offerbee/packages/backend`.

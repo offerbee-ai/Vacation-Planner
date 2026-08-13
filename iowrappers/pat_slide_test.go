@@ -86,7 +86,7 @@ func TestSlidePATNeverResurrectsRacingRevoke(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			require.NoError(t, redisClient.RevokePAT(ctx, "race-user", resp.TokenID))
+			assert.NoError(t, redisClient.RevokePAT(ctx, "race-user", resp.TokenID))
 		}()
 		close(start)
 		wg.Wait()
