@@ -225,6 +225,50 @@ func (r *RedisClient) RevokePATByName(ctx context.Context, userId, tokenName str
 	return r.RevokePAT(ctx, userId, tokenId)
 }
 
+// slidePAT extends a sliding token's expiration to now+RenewInterval. Best-effort:
+// returns the new expiry on success, nil when the slide was skipped, lost a race,
+// or failed — authentication never depends on it. Runs under Watch on the token
+// record so a concurrent revoke always wins.
+func (r *RedisClient) slidePAT(ctx context.Context, tokenId string) *time.Time {
+	tokenKey := strings.Join([]string{"pat", tokenId}, ":")
+	var newExpiry *time.Time
+	err := r.Get().Watch(ctx, func(tx *redis.Tx) error {
+		val, err := tx.Get(ctx, tokenKey).Result()
+		if err != nil {
+			return err
+		}
+		var record TokenRecord
+		if err := json.Unmarshal([]byte(val), &record); err != nil {
+			return err
+		}
+		// Re-check under the watch: a concurrent revoke must win, and a
+		// non-sliding record must never be extended.
+		if record.RevokedAt != nil || record.RenewInterval <= 0 {
+			return nil
+		}
+		expiry := time.Now().Add(record.RenewInterval)
+		record.ExpiresAt = &expiry
+		save, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			return pipe.Set(ctx, tokenKey, string(save), 0).Err()
+		})
+		if err == nil {
+			newExpiry = &expiry
+		}
+		return err
+	}, tokenKey)
+	if err != nil {
+		if !errors.Is(err, redis.TxFailedErr) {
+			Logger.Warnf("failed to slide PAT %s expiration: %v", tokenId, err)
+		}
+		return nil
+	}
+	return newExpiry
+}
+
 // validatePATInternal is a private method for internal validation (server-side auth)
 func (r *RedisClient) validatePATInternal(ctx context.Context, tokenId string) (*TokenRecord, error) {
 	tokenKey := strings.Join([]string{"pat", tokenId}, ":")
@@ -260,6 +304,13 @@ func (r *RedisClient) ValidatePATByHash(ctx context.Context, tokenHash string) (
 
 	if !token.Valid() {
 		return nil, redis.Nil // Token is expired or revoked
+	}
+
+	// Sliding renewal: past the halfway mark, push expiry forward. Best-effort.
+	if token.RenewInterval > 0 && time.Now().After(token.ExpiresAt.Add(-token.RenewInterval/2)) {
+		if newExpiry := r.slidePAT(ctx, token.Id); newExpiry != nil {
+			token.ExpiresAt = newExpiry
+		}
 	}
 
 	return token, nil

@@ -912,3 +912,51 @@ func TestRedisClient_NewPAT_SlidingInterval(t *testing.T) {
 		assert.True(t, record.Valid())
 	})
 }
+
+func TestRedisClient_ValidatePATByHash_SlidingRenewal(t *testing.T) {
+	testUser := user.View{
+		Username: "sliding_renewal_test_user",
+		Email:    "sliding_renewal@example.com",
+		Password: "test_password",
+	}
+	createdUser, err := RedisClient.CreateUser(RedisContext, testUser, false)
+	require.NoError(t, err, "Failed to create test user")
+
+	t.Run("front half of window does not slide", func(t *testing.T) {
+		// 45m left of a 1h sliding window: halfway mark (30m remaining) not
+		// reached. A buggy slide would push expiry to ~now+1h, which the
+		// 45m ceiling below catches.
+		_, err := RedisClient.NewPAT(RedisContext, "front-half-token", createdUser.ID, "front_half_hash", 45*time.Minute, time.Hour)
+		require.NoError(t, err)
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "front_half_hash")
+		require.NoError(t, err)
+		assert.LessOrEqual(t, time.Until(*record.ExpiresAt), 45*time.Minute+2*time.Second,
+			"expiry must not extend past the original window")
+	})
+
+	t.Run("back half of window slides expiry to now+interval", func(t *testing.T) {
+		// 20m left of a 1h sliding window: past the halfway mark.
+		_, err := RedisClient.NewPAT(RedisContext, "back-half-token", createdUser.ID, "back_half_hash", 20*time.Minute, time.Hour)
+		require.NoError(t, err)
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "back_half_hash")
+		require.NoError(t, err)
+		// Returned record reflects the slide...
+		assert.Greater(t, time.Until(*record.ExpiresAt), 55*time.Minute, "expiry should have slid to ~now+1h")
+
+		// ...and the slide was persisted.
+		persisted, err := RedisClient.ValidatePATByHash(RedisContext, "back_half_hash")
+		require.NoError(t, err)
+		assert.Greater(t, time.Until(*persisted.ExpiresAt), 55*time.Minute)
+	})
+
+	t.Run("fixed-expiry token never slides", func(t *testing.T) {
+		_, err := RedisClient.NewPAT(RedisContext, "fixed-token", createdUser.ID, "fixed_hash", 20*time.Minute, 0)
+		require.NoError(t, err)
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "fixed_hash")
+		require.NoError(t, err)
+		assert.LessOrEqual(t, time.Until(*record.ExpiresAt), 20*time.Minute+time.Second)
+	})
+}
