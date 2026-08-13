@@ -1820,6 +1820,34 @@ func (p *MyPlanner) ListPATs(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"pats": tokens})
 }
 
+// getTokenInfo returns metadata for the PAT presented in the Authorization
+// header. PAT-only introspection: validating the token also renews a sliding
+// token, so this endpoint doubles as a keep-alive for idle integrations.
+func (p *MyPlanner) getTokenInfo(ctx *gin.Context) {
+	authHeader := ctx.Request.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+		return
+	}
+	tokenHash := strings.TrimPrefix(authHeader, "Bearer ")
+
+	record, err := p.RedisClient.ValidatePATByHash(ctx, tokenHash)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired access token"})
+		return
+	}
+
+	resp := gin.H{
+		"name":      record.Name,
+		"expiresAt": record.ExpiresAt.Format(time.RFC3339),
+		"valid":     true,
+	}
+	if record.RenewInterval > 0 {
+		resp["renewInterval"] = record.RenewInterval.String()
+	}
+	ctx.JSON(http.StatusOK, resp)
+}
+
 func (p *MyPlanner) SetupRouter(serverPort string) *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	if p.Environment == "debug" {
@@ -1886,6 +1914,7 @@ func (p *MyPlanner) SetupRouter(serverPort string) *http.Server {
 		v1.POST("/create-token", p.createNewPAT)
 		v1.DELETE("/revoke-token", p.RevokePAT)
 		v1.GET("/list-tokens", p.ListPATs)
+		v1.GET("/token", p.getTokenInfo)
 		migrations := v1.Group("/migrate")
 		{
 			migrations.GET("/user-ratings-total", p.UserRatingsTotalMigrationHandler)
