@@ -13,14 +13,14 @@ import (
 )
 
 type TokenRecord struct {
-	Id            string        `json:"id"`
-	Name          string        `json:"name"`
-	Hash          string        `json:"hash"`
-	UserId        string        `json:"user_id"`
-	Scopes        []string      `json:"scopes"`
-	CreatedAt     time.Time     `json:"created_at"`
-	ExpiresAt     *time.Time    `json:"expires_at"`
-	RevokedAt     *time.Time    `json:"revoked_at"`
+	Id        string     `json:"id"`
+	Name      string     `json:"name"`
+	Hash      string     `json:"hash"`
+	UserId    string     `json:"user_id"`
+	Scopes    []string   `json:"scopes"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt *time.Time `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at"`
 	// RenewInterval > 0 makes the token sliding: each authenticated use past the
 	// halfway mark pushes ExpiresAt to now+RenewInterval. 0 = fixed expiry (legacy).
 	RenewInterval time.Duration `json:"renew_interval,omitempty"`
