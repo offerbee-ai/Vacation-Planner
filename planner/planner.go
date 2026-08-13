@@ -1691,6 +1691,7 @@ func (p *MyPlanner) rateLimiter() gin.HandlerFunc {
 type NewTokenInfo struct {
 	Name               string `json:"name"`
 	ExpirationDuration string `json:"expiration_duration,omitempty"` // Optional: e.g., "24h", "7d", "30d"
+	SlidingInterval    string `json:"sliding_interval,omitempty"`    // Optional: e.g., "720h"; token renews on use, 1h-8760h
 }
 
 type RevokeTokenInfo struct {
@@ -1718,9 +1719,26 @@ func (p *MyPlanner) createNewPAT(ctx *gin.Context) {
 		return
 	}
 
-	// Parse the expiration duration, default to 5 minutes if not provided or invalid
+	// Parse the expiration duration, default to 5 minutes if not provided
 	duration := time.Minute * 5 // Default duration
-	if t.ExpirationDuration != "" {
+	var renewInterval time.Duration
+	if t.SlidingInterval != "" && t.ExpirationDuration != "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "sliding_interval and expiration_duration are mutually exclusive"})
+		return
+	}
+	if t.SlidingInterval != "" {
+		parsedInterval, err := time.ParseDuration(t.SlidingInterval)
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid sliding interval format: %s. Use formats like '720h'", t.SlidingInterval)})
+			return
+		}
+		if parsedInterval < time.Hour || parsedInterval > 8760*time.Hour {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "sliding_interval must be between 1h and 8760h"})
+			return
+		}
+		renewInterval = parsedInterval
+		duration = parsedInterval
+	} else if t.ExpirationDuration != "" {
 		if parsedDuration, err := time.ParseDuration(t.ExpirationDuration); err == nil {
 			duration = parsedDuration
 		} else {
@@ -1730,7 +1748,7 @@ func (p *MyPlanner) createNewPAT(ctx *gin.Context) {
 	}
 
 	token := uuid.NewString()
-	resp, err := p.RedisClient.NewPAT(ctx, t.Name, userId, token, duration, 0)
+	resp, err := p.RedisClient.NewPAT(ctx, t.Name, userId, token, duration, renewInterval)
 
 	if err != nil {
 		if re.MatchString(err.Error()) {
@@ -1742,7 +1760,11 @@ func (p *MyPlanner) createNewPAT(ctx *gin.Context) {
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"name": resp.Name, "token": resp.TokenHash, "expiresAt": resp.ExpiresAt})
+	response := gin.H{"name": resp.Name, "token": resp.TokenHash, "expiresAt": resp.ExpiresAt}
+	if renewInterval > 0 {
+		response["renewInterval"] = renewInterval.String()
+	}
+	ctx.JSON(http.StatusOK, response)
 }
 
 func (p *MyPlanner) RevokePAT(ctx *gin.Context) {
