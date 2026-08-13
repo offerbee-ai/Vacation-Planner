@@ -3,7 +3,9 @@ package iowrappers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,4 +60,45 @@ func TestSlidePATSkipsRevokedRecord(t *testing.T) {
 func TestSlidePATMissingRecordIsNoop(t *testing.T) {
 	redisClient, _, ctx := newPATSlideFixture(t)
 	assert.Nil(t, redisClient.slidePAT(ctx, "no-such-id"))
+}
+
+// A slide racing a revoke must never resurrect the token or extend its life.
+// Loops the race many times: a correct implementation never fails; an
+// implementation without the Watch/TxPipelined optimistic lock gets caught.
+func TestSlidePATNeverResurrectsRacingRevoke(t *testing.T) {
+	redisClient, _, ctx := newPATSlideFixture(t)
+
+	for i := 0; i < 100; i++ {
+		// Create a sliding token past its halfway mark via the real API.
+		name := fmt.Sprintf("race-token-%d", i)
+		hash := fmt.Sprintf("race_hash_%d", i)
+		resp, err := redisClient.NewPAT(ctx, name, "race-user", hash, 20*time.Minute, time.Hour)
+		require.NoError(t, err)
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			redisClient.slidePAT(ctx, resp.TokenID)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			require.NoError(t, redisClient.RevokePAT(ctx, "race-user", resp.TokenID))
+		}()
+		close(start)
+		wg.Wait()
+
+		// Whatever the interleaving: token must not authenticate anymore...
+		record, err := redisClient.ValidatePATByHash(ctx, hash)
+		assert.Error(t, err, "iteration %d: revoked token must not validate", i)
+		assert.Nil(t, record)
+
+		// ...and the stored record must still be revoked.
+		stored, err := redisClient.validatePATInternal(ctx, resp.TokenID)
+		require.NoError(t, err)
+		assert.NotNil(t, stored.RevokedAt, "iteration %d: revocation must survive the race", i)
+	}
 }
