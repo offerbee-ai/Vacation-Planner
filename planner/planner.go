@@ -1730,7 +1730,7 @@ func (p *MyPlanner) createNewPAT(ctx *gin.Context) {
 	}
 
 	token := uuid.NewString()
-	resp, err := p.RedisClient.NewPAT(ctx, t.Name, userId, token, duration)
+	resp, err := p.RedisClient.NewPAT(ctx, t.Name, userId, token, duration, 0)
 
 	if err != nil {
 		if re.MatchString(err.Error()) {

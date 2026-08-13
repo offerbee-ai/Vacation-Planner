@@ -58,7 +58,7 @@ func TestGetNearbyPlacesRequiresAuth(t *testing.T) {
 			t.Fatalf("failed to create test user: %v", err)
 		}
 		pat, err := redis_client_mocks.RedisClient.NewPAT(
-			redis_client_mocks.RedisContext, "nearby-places-test", userView.ID, "nearby-places-test-token", time.Hour,
+			redis_client_mocks.RedisContext, "nearby-places-test", userView.ID, "nearby-places-test-token", time.Hour, 0,
 		)
 		if err != nil {
 			t.Fatalf("failed to create test PAT: %v", err)

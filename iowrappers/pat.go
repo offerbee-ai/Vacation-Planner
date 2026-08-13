@@ -13,26 +13,28 @@ import (
 )
 
 type TokenRecord struct {
-	Id        string     `json:"id"`
-	Name      string     `json:"name"`
-	Hash      string     `json:"hash"`
-	UserId    string     `json:"user_id"`
-	Scopes    []string   `json:"scopes"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt *time.Time `json:"expires_at"`
-	RevokedAt *time.Time `json:"revoked_at"`
+	Id            string        `json:"id"`
+	Name          string        `json:"name"`
+	Hash          string        `json:"hash"`
+	UserId        string        `json:"user_id"`
+	Scopes        []string      `json:"scopes"`
+	CreatedAt     time.Time     `json:"created_at"`
+	ExpiresAt     *time.Time    `json:"expires_at"`
+	RevokedAt     *time.Time    `json:"revoked_at"`
+	RenewInterval time.Duration `json:"renew_interval,omitempty"`
 }
 
 // TokenMetadata contains non-sensitive token information for user management
 type TokenMetadata struct {
-	Id        string     `json:"id"`
-	Name      string     `json:"name"`
-	UserId    string     `json:"user_id"`
-	Scopes    []string   `json:"scopes"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt *time.Time `json:"expires_at"`
-	RevokedAt *time.Time `json:"revoked_at"`
-	IsActive  bool       `json:"is_active"`
+	Id            string        `json:"id"`
+	Name          string        `json:"name"`
+	UserId        string        `json:"user_id"`
+	Scopes        []string      `json:"scopes"`
+	CreatedAt     time.Time     `json:"created_at"`
+	ExpiresAt     *time.Time    `json:"expires_at"`
+	RevokedAt     *time.Time    `json:"revoked_at"`
+	IsActive      bool          `json:"is_active"`
+	RenewInterval time.Duration `json:"renew_interval,omitempty"`
 }
 
 // NewPATResponse contains the token information shown once during creation
@@ -88,18 +90,19 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%d years, %d days", years, remainingDays)
 }
 
-func (r *RedisClient) NewPAT(ctx context.Context, name, userId, token string, valid time.Duration) (*NewPATResponse, error) {
+func (r *RedisClient) NewPAT(ctx context.Context, name, userId, token string, valid, renewInterval time.Duration) (*NewPATResponse, error) {
 	now := time.Now()
 	expiresAt := now.Add(valid)
 	record := TokenRecord{
-		Id:        uuid.NewString(),
-		Name:      name,
-		Hash:      token,
-		UserId:    userId,
-		Scopes:    nil,
-		CreatedAt: now,
-		ExpiresAt: &expiresAt,
-		RevokedAt: nil,
+		Id:            uuid.NewString(),
+		Name:          name,
+		Hash:          token,
+		UserId:        userId,
+		Scopes:        nil,
+		CreatedAt:     now,
+		ExpiresAt:     &expiresAt,
+		RevokedAt:     nil,
+		RenewInterval: renewInterval,
 	}
 
 	tokenKey := strings.Join([]string{"pat", record.Id}, ":")
@@ -283,14 +286,15 @@ func (r *RedisClient) ListUserPATMetadata(ctx context.Context, userId string) ([
 
 		// Convert to metadata (no hash exposed)
 		meta := &TokenMetadata{
-			Id:        token.Id,
-			Name:      token.Name,
-			UserId:    token.UserId,
-			Scopes:    token.Scopes,
-			CreatedAt: token.CreatedAt,
-			ExpiresAt: token.ExpiresAt,
-			RevokedAt: token.RevokedAt,
-			IsActive:  token.Valid(),
+			Id:            token.Id,
+			Name:          token.Name,
+			UserId:        token.UserId,
+			Scopes:        token.Scopes,
+			CreatedAt:     token.CreatedAt,
+			ExpiresAt:     token.ExpiresAt,
+			RevokedAt:     token.RevokedAt,
+			IsActive:      token.Valid(),
+			RenewInterval: token.RenewInterval,
 		}
 		metadata = append(metadata, meta)
 	}
