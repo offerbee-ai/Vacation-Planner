@@ -35,7 +35,7 @@ func appleTestClient(t *testing.T, handler http.HandlerFunc) (*AppleMapsClient, 
 	lastQuery := &url.Values{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/token" {
-			fmt.Fprint(w, `{"accessToken":"test-token","expiresInSeconds":1800}`)
+			_, _ = fmt.Fprint(w, `{"accessToken":"test-token","expiresInSeconds":1800}`)
 			return
 		}
 		q := r.URL.Query()
@@ -88,7 +88,7 @@ func TestAppleReverseGeocodeMapsAdminAreaBothWays(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			client, _ := appleTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-				fmt.Fprint(w, tc.body)
+				_, _ = fmt.Fprint(w, tc.body)
 			})
 			got, err := client.ReverseGeocode(context.Background(), 37.33, -122.03)
 			if err != nil {
@@ -108,7 +108,7 @@ func TestAppleReverseGeocodeMapsAdminAreaBothWays(t *testing.T) {
 // matching always yields a locality; Apple cannot.
 func TestAppleGeocodeNeverOverwritesWithAnEmptyValue(t *testing.T) {
 	client, _ := appleTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"results":[{"country":"Japan","countryCode":"JP",
+		_, _ = fmt.Fprint(w, `{"results":[{"country":"Japan","countryCode":"JP",
 			"coordinate":{"latitude":35.6895,"longitude":139.6917},
 			"structuredAddress":{"administrativeArea":"Tokyo"}}]}`)
 	})
@@ -144,7 +144,7 @@ func TestAppleGeocodeFlattensTheQuery(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			client, lastQuery := appleTestClient(t, func(w http.ResponseWriter, _ *http.Request) {
-				fmt.Fprint(w, `{"results":[{"country":"United States",
+				_, _ = fmt.Fprint(w, `{"results":[{"country":"United States",
 					"coordinate":{"latitude":33.66,"longitude":-95.55},
 					"structuredAddress":{"locality":"Paris","administrativeAreaCode":"TX"}}]}`)
 			})
