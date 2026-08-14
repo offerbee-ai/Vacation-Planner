@@ -28,7 +28,7 @@ func newPlaceSearchTestPlanner(t *testing.T) *MyPlanner {
 	}
 	return &MyPlanner{
 		RedisClient: redis_client_mocks.RedisClient,
-		Solver:      Solver{Searcher: iowrappers.CreatePoiSearcher("test-maps-api-key", redisURL)},
+		Solver:      Solver{Searcher: iowrappers.CreatePoiSearcher("test-maps-api-key", redisURL, nil)},
 	}
 }
 

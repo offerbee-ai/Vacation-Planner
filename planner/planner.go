@@ -180,20 +180,19 @@ func (p *MyPlanner) Init(mapsClientApiKey string, redisURL *url.URL, redisStream
 
 	p.MapsClientApiKey = mapsClientApiKey
 	p.BlobBucket = blobBucket
+	var placeDetailsFields []string
+	if v, exists := p.Configs["server:google_maps:detailed_search_fields"]; exists {
+		placeDetailsFields = v.([]string)
+	}
+
 	// initialize poi searcher
-	PoiSearcher := iowrappers.CreatePoiSearcher(mapsClientApiKey, redisURL)
+	PoiSearcher := iowrappers.CreatePoiSearcher(mapsClientApiKey, redisURL, placeDetailsFields)
 	if v, exists := p.Configs["server:plan_solver:same_place_dedupe_count_limit"]; exists {
 		if c, exists := p.Configs["server:plan_solver:nearby_cities_count_limit"]; exists {
 			p.Solver.Init(PoiSearcher, v.(int), c.(int))
 		}
 	} else {
 		logger.Fatal("failed to initialize the planner")
-	}
-
-	var placeDetailsFields []string
-	if v, exists := p.Configs["server:google_maps:detailed_search_fields"]; exists {
-		placeDetailsFields = v.([]string)
-		p.Solver.Searcher.GetMapsClient().SetDetailedSearchFields(placeDetailsFields)
 	}
 
 	p.PhotoClient, err = iowrappers.CreatePhotoClient(mapsClientApiKey, PhotoApiBaseURL, enableMapsPhotoClient, placeDetailsFields, p.RedisClient)

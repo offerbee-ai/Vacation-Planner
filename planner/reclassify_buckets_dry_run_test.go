@@ -30,7 +30,7 @@ func TestReclassifyBucketsMigrationDryRunDefault(t *testing.T) {
 	}
 	p := &MyPlanner{
 		RedisClient: redis_client_mocks.RedisClient,
-		Solver:      Solver{Searcher: iowrappers.CreatePoiSearcher("test-maps-api-key", redisURL)},
+		Solver:      Solver{Searcher: iowrappers.CreatePoiSearcher("test-maps-api-key", redisURL, nil)},
 	}
 
 	router := gin.New()
@@ -95,7 +95,7 @@ func TestReclassifyBucketsMigrationRequiresAdmin(t *testing.T) {
 	}
 	p := &MyPlanner{
 		RedisClient: redis_client_mocks.RedisClient,
-		Solver:      Solver{Searcher: iowrappers.CreatePoiSearcher("test-maps-api-key", redisURL)},
+		Solver:      Solver{Searcher: iowrappers.CreatePoiSearcher("test-maps-api-key", redisURL, nil)},
 	}
 
 	router := gin.New()
