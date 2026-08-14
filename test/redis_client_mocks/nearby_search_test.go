@@ -149,9 +149,9 @@ func TestGetPlaces_readsEveryPriceLevel(t *testing.T) {
 // The setup of this test case guarantees that the Morgan Library & Museum is within the search radius but is excluded due to temporary closure
 func TestGetPlaces_shouldExcludePlacesNotOperational(t *testing.T) {
 	placeSearchRequest := iowrappers.PlaceSearchRequest{
-		Location:       POI.Location{Longitude: -74.0060, Latitude: 40.7128},
-		PlaceCat:       POI.PlaceCategoryVisit,
-		Radius:         uint(20000),
+		Location: POI.Location{Longitude: -74.0060, Latitude: 40.7128},
+		PlaceCat: POI.PlaceCategoryVisit,
+		Radius:   uint(20000),
 	}
 
 	cachedVisitPlaces, _ := RedisClient.NearbySearch(RedisContext, &placeSearchRequest)

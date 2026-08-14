@@ -11,12 +11,18 @@ import (
 	"github.com/weihesdlegend/Vacation-planner/iowrappers"
 )
 
+// newTestQuotaCounter returns a counter with today's key cleared. Only the
+// quota key is deleted — this package's fixtures (cities, places) are seeded
+// once in init() functions and shared by every test, so a FlushAll here would
+// wipe them for whichever tests happen to run later.
 func newTestQuotaCounter(limit int, threshold float64, allowance int) *iowrappers.QuotaCounter {
-	return iowrappers.NewQuotaCounter(RedisClient, iowrappers.QuotaConfig{
+	counter := iowrappers.NewQuotaCounter(RedisClient, iowrappers.QuotaConfig{
 		DailyLimit:        limit,
 		Threshold:         threshold,
 		ExternalAllowance: allowance,
 	})
+	RedisMockSvr.Del(counter.Key())
+	return counter
 }
 
 // Apple charges for every HTTP round trip, not every logical geocode: a stale
@@ -25,7 +31,6 @@ func newTestQuotaCounter(limit int, threshold float64, allowance int) *iowrapper
 // worst exactly when the budget is tightest. So the counter sits in the
 // transport.
 func TestQuotaCounterCountsEveryRoundTrip(t *testing.T) {
-	RedisMockSvr.FlushAll()
 	counter := newTestQuotaCounter(100, 0.9, 0)
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -67,7 +72,6 @@ func TestQuotaCounterThreshold(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			RedisMockSvr.FlushAll()
 			counter := newTestQuotaCounter(tc.limit, tc.threshold, tc.allowance)
 			ctx := context.Background()
 			for range tc.spend {
@@ -113,7 +117,6 @@ func TestQuotaCounterRedisFailureDoesNotBlock(t *testing.T) {
 // A 48 hour expiry keeps yesterday's key readable for diagnosis without letting
 // the keyspace grow without bound.
 func TestQuotaCounterKeyExpires(t *testing.T) {
-	RedisMockSvr.FlushAll()
 	counter := newTestQuotaCounter(100, 0.9, 0)
 	counter.Record(context.Background())
 

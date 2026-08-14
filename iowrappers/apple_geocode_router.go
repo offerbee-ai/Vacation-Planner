@@ -3,6 +3,8 @@ package iowrappers
 import (
 	"context"
 	"errors"
+	"net/http"
+	"time"
 
 	"github.com/weihesdlegend/Vacation-planner/POI"
 	"github.com/weihesdlegend/Vacation-planner/applemaps"
@@ -81,4 +83,60 @@ func (r *AppleGeocodeRouter) ReverseGeocode(ctx context.Context, latitude, longi
 // NearbySearch always goes to Google. See the type comment.
 func (r *AppleGeocodeRouter) NearbySearch(ctx context.Context, request *PlaceSearchRequest) ([]POI.Place, error) {
 	return r.google.NearbySearch(ctx, request)
+}
+
+// AppleMapsSettings is the deployment-time configuration for Apple Maps.
+type AppleMapsSettings struct {
+	// Enabled is false by default. Nothing Apple-derived is requested or cached
+	// until it is deliberately turned on, which is also what keeps the
+	// unresolved question of Apple's caching terms off the merge path.
+	Enabled bool
+	// TeamID is the Apple Developer team ID, the JWT iss claim.
+	TeamID string
+	// KeyID is the MapKit key ID, the JWT kid header.
+	KeyID string
+	// PrivateKey is the .p8 contents, raw PEM or base64-encoded PEM.
+	PrivateKey string
+	// QuotaThreshold is the fraction of the daily allowance at which Apple stops
+	// being used. Zero means the QuotaConfig default.
+	QuotaThreshold float64
+	// ExternalAllowance is the calls per day assumed spent by MapKit JS on the
+	// same team, which this service cannot observe.
+	ExternalAllowance int
+}
+
+// EnableAppleMaps routes geocoding through Apple, keeping Google as the
+// fallback and as the only place-search provider.
+//
+// It returns an error rather than logging and continuing so the caller can
+// decide, but the caller in main deliberately continues: a missing or malformed
+// credential should cost the quota saving, not the service.
+func (s *PoiSearcher) EnableAppleMaps(settings AppleMapsSettings) error {
+	if !settings.Enabled {
+		return nil
+	}
+
+	quota := NewQuotaCounter(s.redisClient, QuotaConfig{
+		Threshold:         settings.QuotaThreshold,
+		ExternalAllowance: settings.ExternalAllowance,
+	})
+
+	// The counter lives in the transport so token exchanges and retries are
+	// counted alongside the calls a search makes directly.
+	appleClient, err := CreateAppleMapsClient(AppleMapsConfig{
+		TeamID:     settings.TeamID,
+		KeyID:      settings.KeyID,
+		PrivateKey: settings.PrivateKey,
+		HTTPClient: &http.Client{
+			Timeout:   15 * time.Second,
+			Transport: quota.Transport(nil),
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	s.searcher = NewAppleGeocodeRouter(appleClient, s.searcher, quota)
+	Logger.Infow("applemaps: geocoding enabled", "team", settings.TeamID)
+	return nil
 }
