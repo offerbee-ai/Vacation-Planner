@@ -8,5 +8,6 @@ var (
 	_ SearchClient       = (*MapsClient)(nil)
 	_ PlaceDetailsClient = (*MapsClient)(nil)
 
-	_ Geocoder = (*AppleMapsClient)(nil)
+	_ Geocoder     = (*AppleMapsClient)(nil)
+	_ SearchClient = (*AppleGeocodeRouter)(nil)
 )
