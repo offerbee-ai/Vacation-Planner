@@ -2,6 +2,7 @@ package redis_client_mocks
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -84,7 +85,7 @@ func TestRedisClient_NewPAT(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			response, err := RedisClient.NewPAT(tt.args.ctx, tt.args.name, tt.args.userId, tt.args.token, tt.args.validity)
+			response, err := RedisClient.NewPAT(tt.args.ctx, tt.args.name, tt.args.userId, tt.args.token, tt.args.validity, 0)
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -145,12 +146,12 @@ func TestRedisClient_NewPAT_ReuseExpiredTokenName(t *testing.T) {
 	tokenName := "reusable-token"
 
 	// Step 1: Create an expired token
-	expiredResponse, err := RedisClient.NewPAT(ctx, tokenName, createdUser.ID, "expired_token_hash", -1*time.Hour) // Already expired
+	expiredResponse, err := RedisClient.NewPAT(ctx, tokenName, createdUser.ID, "expired_token_hash", -1*time.Hour, 0) // Already expired
 	assert.NoError(t, err)
 	assert.NotNil(t, expiredResponse)
 
 	// Step 2: Try to create a new token with the same name - should succeed because the previous one is expired
-	newResponse, err := RedisClient.NewPAT(ctx, tokenName, createdUser.ID, "new_token_hash", 24*time.Hour)
+	newResponse, err := RedisClient.NewPAT(ctx, tokenName, createdUser.ID, "new_token_hash", 24*time.Hour, 0)
 	assert.NoError(t, err)
 	assert.NotNil(t, newResponse)
 	assert.Equal(t, tokenName, newResponse.Name)
@@ -158,7 +159,7 @@ func TestRedisClient_NewPAT_ReuseExpiredTokenName(t *testing.T) {
 	assert.NotEqual(t, expiredResponse.TokenID, newResponse.TokenID, "Should create a new token with different ID")
 
 	// Step 3: Verify that trying to create another token with the same name fails (because the new one is still valid)
-	failResponse, err := RedisClient.NewPAT(ctx, tokenName, createdUser.ID, "should_fail_hash", 24*time.Hour)
+	failResponse, err := RedisClient.NewPAT(ctx, tokenName, createdUser.ID, "should_fail_hash", 24*time.Hour, 0)
 	assert.Error(t, err)
 	assert.Nil(t, failResponse)
 	assert.Contains(t, err.Error(), "already exists")
@@ -189,7 +190,7 @@ func TestRedisClient_RevokePAT(t *testing.T) {
 	}
 
 	// Create a token to revoke
-	response, err := RedisClient.NewPAT(RedisContext, "token-to-revoke", createdUser.ID, "revoke_test_hash", 24*time.Hour)
+	response, err := RedisClient.NewPAT(RedisContext, "token-to-revoke", createdUser.ID, "revoke_test_hash", 24*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create test token:", err)
 	}
@@ -278,7 +279,7 @@ func TestRedisClient_RevokePATByName(t *testing.T) {
 
 	// Create a token to revoke
 	tokenName := "test-token-to-revoke"
-	_, err = RedisClient.NewPAT(context.Background(), tokenName, createdUser.ID, "token_hash_123", 24*time.Hour)
+	_, err = RedisClient.NewPAT(context.Background(), tokenName, createdUser.ID, "token_hash_123", 24*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create test token:", err)
 	}
@@ -360,12 +361,12 @@ func TestRedisClient_ValidatePATByHash(t *testing.T) {
 	activeTokenHash := "active_token_hash_123"
 	expiredTokenHash := "expired_token_hash_456"
 
-	activeResponse, err := RedisClient.NewPAT(context.Background(), "active-token", createdUser.ID, activeTokenHash, 24*time.Hour)
+	activeResponse, err := RedisClient.NewPAT(context.Background(), "active-token", createdUser.ID, activeTokenHash, 24*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create active test token:", err)
 	}
 
-	_, err = RedisClient.NewPAT(context.Background(), "expired-token", createdUser.ID, expiredTokenHash, -1*time.Hour)
+	_, err = RedisClient.NewPAT(context.Background(), "expired-token", createdUser.ID, expiredTokenHash, -1*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create expired test token:", err)
 	}
@@ -450,19 +451,19 @@ func TestRedisClient_ListUserPATMetadata(t *testing.T) {
 	}
 
 	// Create multiple tokens
-	token1Response, err := RedisClient.NewPAT(RedisContext, "token-1", createdUser.ID, "hash_1", 24*time.Hour)
+	token1Response, err := RedisClient.NewPAT(RedisContext, "token-1", createdUser.ID, "hash_1", 24*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create token 1:", err)
 	}
 	token1Id := token1Response.TokenID
 
-	token2Response, err := RedisClient.NewPAT(RedisContext, "token-2", createdUser.ID, "hash_2", 24*time.Hour)
+	token2Response, err := RedisClient.NewPAT(RedisContext, "token-2", createdUser.ID, "hash_2", 24*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create token 2:", err)
 	}
 	token2Id := token2Response.TokenID
 
-	token3Response, err := RedisClient.NewPAT(RedisContext, "token-3", createdUser.ID, "hash_3", 24*time.Hour)
+	token3Response, err := RedisClient.NewPAT(RedisContext, "token-3", createdUser.ID, "hash_3", 24*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create token 3:", err)
 	}
@@ -602,7 +603,7 @@ func TestPATSecurity_TokenHashNotExposed(t *testing.T) {
 
 	// Create a token with a known hash
 	secretHash := "this_should_never_be_exposed_12345"
-	response, err := RedisClient.NewPAT(RedisContext, "security-test-token", createdUser.ID, secretHash, 24*time.Hour)
+	response, err := RedisClient.NewPAT(RedisContext, "security-test-token", createdUser.ID, secretHash, 24*time.Hour, 0)
 	if err != nil {
 		t.Fatal("Failed to create test token:", err)
 	}
@@ -750,7 +751,7 @@ func TestPATExpirationDurationIntegration(t *testing.T) {
 			tokenHash := "integration-test-token-" + tokenName
 			now := time.Now()
 
-			response, err := RedisClient.NewPAT(RedisContext, tokenName, createdUser.ID, tokenHash, duration)
+			response, err := RedisClient.NewPAT(RedisContext, tokenName, createdUser.ID, tokenHash, duration, 0)
 			require.NoError(t, err, "Token creation should succeed")
 
 			// Validate response
@@ -815,7 +816,7 @@ func TestPATExpirationRealTimeValidation(t *testing.T) {
 		shortDuration := 100 * time.Millisecond
 
 		// Create token with very short expiration
-		response, err := RedisClient.NewPAT(RedisContext, tokenName, createdUser.ID, tokenHash, shortDuration)
+		response, err := RedisClient.NewPAT(RedisContext, tokenName, createdUser.ID, tokenHash, shortDuration, 0)
 		require.NoError(t, err, "Token creation should succeed")
 		assert.NotEmpty(t, response.TokenHash)
 
@@ -853,7 +854,7 @@ func TestPATExpirationRealTimeValidation(t *testing.T) {
 		negativeDuration := -1 * time.Hour
 
 		// Create token with negative duration (immediately expired)
-		_, err := RedisClient.NewPAT(RedisContext, tokenName, createdUser.ID, tokenHash, negativeDuration)
+		_, err := RedisClient.NewPAT(RedisContext, tokenName, createdUser.ID, tokenHash, negativeDuration, 0)
 		require.NoError(t, err, "Token creation should succeed even with negative duration")
 
 		// Verify token is immediately invalid
@@ -864,5 +865,98 @@ func TestPATExpirationRealTimeValidation(t *testing.T) {
 		// Clean up
 		err = RedisClient.RevokePATByName(RedisContext, createdUser.ID, tokenName)
 		assert.NoError(t, err, "Should be able to clean up test token")
+	})
+}
+
+func TestRedisClient_NewPAT_SlidingInterval(t *testing.T) {
+	testUser := user.View{
+		Username: "sliding_create_test_user",
+		Email:    "sliding_create@example.com",
+		Password: "test_password",
+	}
+	createdUser, err := RedisClient.CreateUser(RedisContext, testUser, false)
+	require.NoError(t, err, "Failed to create test user")
+
+	t.Run("sliding token stores RenewInterval and exposes it in metadata", func(t *testing.T) {
+		_, err := RedisClient.NewPAT(RedisContext, "sliding-token", createdUser.ID, "sliding_hash_1", time.Hour, time.Hour)
+		require.NoError(t, err)
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "sliding_hash_1")
+		require.NoError(t, err)
+		assert.Equal(t, time.Hour, record.RenewInterval)
+
+		metadata, err := RedisClient.ListUserPATMetadata(RedisContext, createdUser.ID)
+		require.NoError(t, err)
+		found := false
+		for _, meta := range metadata {
+			if meta.Name == "sliding-token" {
+				found = true
+				assert.Equal(t, time.Hour, meta.RenewInterval)
+			}
+		}
+		assert.True(t, found, "sliding token should appear in metadata")
+	})
+
+	t.Run("legacy record without renew_interval field validates with zero interval", func(t *testing.T) {
+		// Simulates a record written before the RenewInterval field existed.
+		expiry := time.Now().Add(time.Hour)
+		legacyJSON := fmt.Sprintf(
+			`{"id":"legacy-id-1","name":"legacy-token","hash":"legacy_hash_1","user_id":"%s","scopes":null,"created_at":"%s","expires_at":"%s","revoked_at":null}`,
+			createdUser.ID, time.Now().Format(time.RFC3339Nano), expiry.Format(time.RFC3339Nano))
+		require.NoError(t, RedisMockSvr.Set("pat:legacy-id-1", legacyJSON))
+		require.NoError(t, RedisMockSvr.Set("pat_hash:legacy_hash_1", "legacy-id-1"))
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "legacy_hash_1")
+		require.NoError(t, err)
+		assert.Equal(t, time.Duration(0), record.RenewInterval)
+		assert.True(t, record.Valid())
+	})
+}
+
+func TestRedisClient_ValidatePATByHash_SlidingRenewal(t *testing.T) {
+	testUser := user.View{
+		Username: "sliding_renewal_test_user",
+		Email:    "sliding_renewal@example.com",
+		Password: "test_password",
+	}
+	createdUser, err := RedisClient.CreateUser(RedisContext, testUser, false)
+	require.NoError(t, err, "Failed to create test user")
+
+	t.Run("front half of window does not slide", func(t *testing.T) {
+		// 45m left of a 1h sliding window: halfway mark (30m remaining) not
+		// reached. A buggy slide would push expiry to ~now+1h, which the
+		// 45m ceiling below catches.
+		_, err := RedisClient.NewPAT(RedisContext, "front-half-token", createdUser.ID, "front_half_hash", 45*time.Minute, time.Hour)
+		require.NoError(t, err)
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "front_half_hash")
+		require.NoError(t, err)
+		assert.LessOrEqual(t, time.Until(*record.ExpiresAt), 45*time.Minute+2*time.Second,
+			"expiry must not extend past the original window")
+	})
+
+	t.Run("back half of window slides expiry to now+interval", func(t *testing.T) {
+		// 20m left of a 1h sliding window: past the halfway mark.
+		_, err := RedisClient.NewPAT(RedisContext, "back-half-token", createdUser.ID, "back_half_hash", 20*time.Minute, time.Hour)
+		require.NoError(t, err)
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "back_half_hash")
+		require.NoError(t, err)
+		// Returned record reflects the slide...
+		assert.Greater(t, time.Until(*record.ExpiresAt), 55*time.Minute, "expiry should have slid to ~now+1h")
+
+		// ...and the slide was persisted.
+		persisted, err := RedisClient.ValidatePATByHash(RedisContext, "back_half_hash")
+		require.NoError(t, err)
+		assert.Greater(t, time.Until(*persisted.ExpiresAt), 55*time.Minute)
+	})
+
+	t.Run("fixed-expiry token never slides", func(t *testing.T) {
+		_, err := RedisClient.NewPAT(RedisContext, "fixed-token", createdUser.ID, "fixed_hash", 20*time.Minute, 0)
+		require.NoError(t, err)
+
+		record, err := RedisClient.ValidatePATByHash(RedisContext, "fixed_hash")
+		require.NoError(t, err)
+		assert.LessOrEqual(t, time.Until(*record.ExpiresAt), 20*time.Minute+time.Second)
 	})
 }

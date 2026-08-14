@@ -159,9 +159,15 @@ func toPATView(metadata *iowrappers.TokenMetadata) PATView {
 		expiresAt = metadata.ExpiresAt.Format(time.RFC3339)
 	}
 
+	var renewInterval string
+	if metadata.RenewInterval > 0 {
+		renewInterval = metadata.RenewInterval.String()
+	}
+
 	return PATView{
-		Id:        metadata.Id,
-		Name:      metadata.Name,
-		ExpiresAt: expiresAt,
+		Id:            metadata.Id,
+		Name:          metadata.Name,
+		ExpiresAt:     expiresAt,
+		RenewInterval: renewInterval,
 	}
 }
