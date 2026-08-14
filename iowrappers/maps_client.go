@@ -15,11 +15,26 @@ import (
 	"googlemaps.github.io/maps"
 )
 
-// SearchClient defines an interface of a client that performs location-based operations such as nearby search
-type SearchClient interface {
+// Geocoder translates between textual locations and coordinates. It is the half
+// of SearchClient that Apple Maps can serve: Apple's Place object carries no
+// opening hours, rating, or price at any tier, so it cannot serve NearbySearch,
+// but its address data is complete.
+type Geocoder interface {
 	Geocode(context.Context, *GeocodeQuery) (float64, float64, error)        // translate a textual location to latitude and longitude
 	ReverseGeocode(context.Context, float64, float64) (*GeocodeQuery, error) // look up a textual location based on latitude and longitude
-	NearbySearch(context.Context, *PlaceSearchRequest) ([]POI.Place, error)  // search nearby places in a category around a central location
+}
+
+// SearchClient defines an interface of a client that performs location-based operations such as nearby search
+type SearchClient interface {
+	Geocoder
+	NearbySearch(context.Context, *PlaceSearchRequest) ([]POI.Place, error) // search nearby places in a category around a central location
+}
+
+// PlaceDetailsClient buys the per-place detail record. It is separate from
+// SearchClient because it is a capability with exactly one provider — Apple
+// exposes no equivalent — and only the data migrations use it.
+type PlaceDetailsClient interface {
+	PlaceDetailedSearch(context.Context, string, []string) (maps.PlaceDetailsResult, error)
 }
 
 // CachedPlaceLookup resolves already-stored place records by ID, returning only the IDs it

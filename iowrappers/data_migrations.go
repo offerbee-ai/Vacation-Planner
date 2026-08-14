@@ -143,7 +143,7 @@ func isPlaceDetailsValid(place POI.Place, nonEmptyFields []PlaceDetailsFields) b
 // a generic migration method
 // returns place details results for the calling function to extract and use specific fields
 func (s *PoiSearcher) addDataFieldsToPlaces(context context.Context, field string, batchSize int) (map[string]PlaceDetailsSearchResult, error) {
-	mapsClient := s.GetMapsClient()
+	mapsClient := s.mapsClient
 	redisClient := s.GetRedisClient()
 	placeDetailsKeys, totalPlacesCount, err := redisClient.GetPlaceCountInRedis(context)
 	if err != nil {

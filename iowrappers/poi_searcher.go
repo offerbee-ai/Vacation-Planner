@@ -37,6 +37,15 @@ const (
 )
 
 type PoiSearcher struct {
+	// searcher is the single provider seam. Every outbound Geocode,
+	// ReverseGeocode, and NearbySearch goes through it, so routing a provider in
+	// means replacing this one field and nothing else. It is the *MapsClient
+	// itself unless Apple is enabled.
+	searcher SearchClient
+	// mapsClient remains as the Google-only capability handle — text search and
+	// the migrations' Place Details path both reach unexported MapsClient
+	// internals (apiSemaphore) that no interface can express. It must never serve
+	// geocoding or nearby search — those go through searcher.
 	mapsClient  *MapsClient
 	redisClient *RedisClient
 }
@@ -66,20 +75,24 @@ type NearbyCityResponse struct {
 
 var Logger *zap.SugaredLogger
 
-func CreatePoiSearcher(mapsApiKey string, redisUrl *url.URL) *PoiSearcher {
-	poiSearcher := PoiSearcher{
-		mapsClient:  CreateMapsClient(mapsApiKey),
-		redisClient: CreateRedisClient(redisUrl),
-	}
-	// Let external searches consult the cache before buying Place Details for a place we already
-	// have. Wired here rather than in CreateMapsClient so the maps client keeps no dependency on
-	// Redis.
-	poiSearcher.mapsClient.SetCachedPlaceLookup(poiSearcher.redisClient.CachedPlaces)
-	return &poiSearcher
-}
+func CreatePoiSearcher(mapsApiKey string, redisUrl *url.URL, detailedSearchFields []string) *PoiSearcher {
+	mapsClient := CreateMapsClient(mapsApiKey)
+	redisClient := CreateRedisClient(redisUrl)
 
-func (s *PoiSearcher) GetMapsClient() *MapsClient {
-	return s.mapsClient
+	// Both of these used to be poked in from outside after construction, which is
+	// why PoiSearcher had to expose the concrete client at all. Doing it here
+	// leaves nothing for callers to reach through for. Wired here rather than in
+	// CreateMapsClient so the maps client keeps no dependency on Redis.
+	mapsClient.SetCachedPlaceLookup(redisClient.CachedPlaces)
+	if len(detailedSearchFields) > 0 {
+		mapsClient.SetDetailedSearchFields(detailedSearchFields)
+	}
+
+	return &PoiSearcher{
+		searcher:    mapsClient,
+		mapsClient:  mapsClient,
+		redisClient: redisClient,
+	}
 }
 
 func (s *PoiSearcher) GetRedisClient() *RedisClient {
@@ -136,7 +149,7 @@ func (s *PoiSearcher) Geocode(context context.Context, query *GeocodeQuery) (lat
 	var geocodeMissingErr error
 	lat, lng, geocodeMissingErr = s.redisClient.Geocode(context, query)
 	if geocodeMissingErr != nil {
-		lat, lng, err = s.mapsClient.Geocode(context, query)
+		lat, lng, err = s.searcher.Geocode(context, query)
 		if err != nil {
 			return
 		}
@@ -156,7 +169,7 @@ func (s *PoiSearcher) ReverseGeocode(ctx context.Context, lat, lng float64) (*Ge
 	if cached, err := s.redisClient.ReverseGeocode(ctx, lat, lng); err == nil {
 		return cached, nil
 	}
-	query, err := s.mapsClient.ReverseGeocode(ctx, lat, lng)
+	query, err := s.searcher.ReverseGeocode(ctx, lat, lng)
 	if err != nil {
 		return nil, err
 	}
@@ -345,7 +358,7 @@ func (s *PoiSearcher) searchPlacesWithMaps(ctx context.Context, req *PlaceSearch
 	// so one API spend populates the cache for a whole area
 	req.Radius = ColdStartSearchRadius
 
-	places, err := s.GetMapsClient().NearbySearch(ctx, req)
+	places, err := s.searcher.NearbySearch(ctx, req)
 
 	// restore search radius upon search completion
 	req.Radius = originalRadius

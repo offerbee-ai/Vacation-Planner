@@ -34,6 +34,14 @@ type Config struct {
 	GoogleOAuthClientSecret string `envconfig:"GOOGLE_OAUTH_CLIENT_SECRET"`
 	GeonamesApiKey          string `envconfig:"GEONAMES_API_KEY"`
 	BlobBucketId            string `envconfig:"BLOB_BUCKET_ID"`
+	AppleMaps               struct {
+		Enabled           bool    `envconfig:"APPLE_MAPS_ENABLED" default:"false"`
+		TeamID            string  `envconfig:"APPLE_MAPS_TEAM_ID"`
+		KeyID             string  `envconfig:"APPLE_MAPS_KEY_ID"`
+		PrivateKey        string  `envconfig:"APPLE_MAPS_PRIVATE_KEY"`
+		QuotaThreshold    float64 `envconfig:"APPLE_MAPS_QUOTA_THRESHOLD" default:"0.9"`
+		ExternalAllowance int     `envconfig:"APPLE_MAPS_EXTERNAL_ALLOWANCE" default:"0"`
+	}
 }
 
 type Configurations struct {
@@ -91,7 +99,15 @@ func RunServer() {
 
 	myPlanner.Init(conf.MapsClientApiKey, redisURL, conf.Redis.RedisStreamName,
 		flattenConfig(configs), conf.GoogleOAuthClientID, conf.GoogleOAuthClientSecret,
-		conf.Server.Domain, conf.GeonamesApiKey, conf.BlobBucketId)
+		conf.Server.Domain, conf.GeonamesApiKey, conf.BlobBucketId,
+		iowrappers.AppleMapsSettings{
+			Enabled:           conf.AppleMaps.Enabled,
+			TeamID:            conf.AppleMaps.TeamID,
+			KeyID:             conf.AppleMaps.KeyID,
+			PrivateKey:        conf.AppleMaps.PrivateKey,
+			QuotaThreshold:    conf.AppleMaps.QuotaThreshold,
+			ExternalAllowance: conf.AppleMaps.ExternalAllowance,
+		})
 	svr := myPlanner.SetupRouter(conf.Server.ServerPort)
 
 	c := make(chan os.Signal, 1)

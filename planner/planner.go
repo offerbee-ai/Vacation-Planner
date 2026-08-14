@@ -145,7 +145,7 @@ type PlaceDetailsResp struct {
 
 type RequestIdKey string
 
-func (p *MyPlanner) Init(mapsClientApiKey string, redisURL *url.URL, redisStreamName string, configs map[string]interface{}, oauthClientID string, oauthClientSecret string, domain string, geonamesApiKey string, blobBucket string) {
+func (p *MyPlanner) Init(mapsClientApiKey string, redisURL *url.URL, redisStreamName string, configs map[string]interface{}, oauthClientID string, oauthClientSecret string, domain string, geonamesApiKey string, blobBucket string, appleMaps iowrappers.AppleMapsSettings) {
 	logger := iowrappers.Logger
 	p.PlanningEvents = make(chan iowrappers.PlanningEvent, jobQueueBufferSize)
 	p.RedisClient = iowrappers.CreateRedisClient(redisURL)
@@ -180,20 +180,24 @@ func (p *MyPlanner) Init(mapsClientApiKey string, redisURL *url.URL, redisStream
 
 	p.MapsClientApiKey = mapsClientApiKey
 	p.BlobBucket = blobBucket
+	var placeDetailsFields []string
+	if v, exists := p.Configs["server:google_maps:detailed_search_fields"]; exists {
+		placeDetailsFields = v.([]string)
+	}
+
 	// initialize poi searcher
-	PoiSearcher := iowrappers.CreatePoiSearcher(mapsClientApiKey, redisURL)
+	PoiSearcher := iowrappers.CreatePoiSearcher(mapsClientApiKey, redisURL, placeDetailsFields)
+	if err := PoiSearcher.EnableAppleMaps(appleMaps); err != nil {
+		// Degrade to Google-only. A bad Apple credential costs the quota saving,
+		// not the service.
+		logger.Warnf("Apple Maps disabled: %v", err)
+	}
 	if v, exists := p.Configs["server:plan_solver:same_place_dedupe_count_limit"]; exists {
 		if c, exists := p.Configs["server:plan_solver:nearby_cities_count_limit"]; exists {
 			p.Solver.Init(PoiSearcher, v.(int), c.(int))
 		}
 	} else {
 		logger.Fatal("failed to initialize the planner")
-	}
-
-	var placeDetailsFields []string
-	if v, exists := p.Configs["server:google_maps:detailed_search_fields"]; exists {
-		placeDetailsFields = v.([]string)
-		p.Solver.Searcher.GetMapsClient().SetDetailedSearchFields(placeDetailsFields)
 	}
 
 	p.PhotoClient, err = iowrappers.CreatePhotoClient(mapsClientApiKey, PhotoApiBaseURL, enableMapsPhotoClient, placeDetailsFields, p.RedisClient)
@@ -1445,7 +1449,7 @@ func (p *MyPlanner) getNearbyPlacesByCategory(ctx *gin.Context) {
 				MinNumResults: uint(limit),
 				// Bound the expensive Place Details calls even when the candidate
 				// pool (limit) is widened for dedup — details cost stays ~today's.
-				DetailsLimit:   min(limit, 20),
+				DetailsLimit: min(limit, 20),
 			}
 			result := nearbyPlacesByCategoryResult{Category: string(placeCat), Places: []POI.Place{}}
 			places, searchErr := p.Solver.Searcher.NearbySearch(searchContext, searchReq)
