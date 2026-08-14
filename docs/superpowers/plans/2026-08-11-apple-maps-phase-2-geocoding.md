@@ -51,7 +51,7 @@ Pure refactor. No behaviour change, no call site moves — `*MapsClient` already
 - Consumes: nothing.
 - Produces: `Geocoder` (methods `Geocode(context.Context, *GeocodeQuery) (float64, float64, error)`, `ReverseGeocode(context.Context, float64, float64) (*GeocodeQuery, error)`); `SearchClient` now embeds `Geocoder` and adds `NearbySearch(context.Context, *PlaceSearchRequest) ([]POI.Place, error)`; `PlaceDetailsClient` (method `PlaceDetailedSearch(context.Context, string, []string) (maps.PlaceDetailsResult, error)`).
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `iowrappers/interfaces_test.go`:
 
@@ -68,12 +68,12 @@ var (
 )
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go vet ./iowrappers/`
 Expected: FAIL — `undefined: Geocoder`, `undefined: PlaceDetailsClient`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `iowrappers/maps_client.go`, replace the `SearchClient` declaration:
 
@@ -101,12 +101,12 @@ type PlaceDetailsClient interface {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go build ./... && go vet ./... && go test ./iowrappers/ ./planner/`
 Expected: PASS, no call site changes required.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add iowrappers/maps_client.go iowrappers/interfaces_test.go
@@ -130,7 +130,7 @@ Still no Apple. This makes the seam exist so later tasks plug into it, and close
 - Consumes: `Geocoder`, `SearchClient`, `PlaceDetailsClient` from Task 1.
 - Produces: `CreatePoiSearcher(mapsApiKey string, redisUrl *url.URL, detailedSearchFields []string) *PoiSearcher`. `PoiSearcher.GetMapsClient()` is **deleted**. Field `PoiSearcher.searcher SearchClient` is the single provider seam that Task 5 replaces.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `iowrappers/poi_searcher_seam_test.go`:
 
@@ -195,12 +195,12 @@ func TestPoiSearcherHasNoGetMapsClient(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./iowrappers/ -run 'TestPoiSearcher(RoutesGeocoding|HasNoGetMapsClient)' -v`
 Expected: FAIL — `unknown field searcher in struct literal`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 In `iowrappers/poi_searcher.go`, replace the struct and constructor:
 
@@ -268,12 +268,12 @@ stay in scope.
 
 In all three test call sites, add the new argument: `iowrappers.CreatePoiSearcher("test-maps-api-key", redisURL, nil)`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go build ./... && go vet ./... && go test ./...`
 Expected: PASS. Confirm no `GetMapsClient` remains: `grep -rn "GetMapsClient" --include="*.go" .` returns nothing.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add iowrappers/poi_searcher.go iowrappers/poi_searcher_seam_test.go iowrappers/data_migrations.go planner/
@@ -292,7 +292,7 @@ git commit -m "refactor(iowrappers): route every provider call through one PoiSe
 - Consumes: `Geocoder`, `GeocodeQuery` from Tasks 1-2.
 - Produces: `CreateAppleMapsClient(cfg AppleMapsConfig) (*AppleMapsClient, error)`; `AppleMapsConfig{TeamID, KeyID, PrivateKey string; BaseURL string; HTTPClient *http.Client}`; `*AppleMapsClient` satisfies `Geocoder`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `iowrappers/apple_maps_client_test.go`:
 
@@ -468,12 +468,12 @@ func TestAppleGeocodeRejectsAnEmptyQuery(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./iowrappers/ -run TestApple -v`
 Expected: FAIL — `undefined: CreateAppleMapsClient`, `undefined: AppleMapsConfig`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `iowrappers/apple_maps_client.go`:
 
@@ -614,12 +614,12 @@ func (c *AppleMapsClient) ReverseGeocode(ctx context.Context, latitude, longitud
 
 Add to `iowrappers/interfaces_test.go`: `_ Geocoder = (*AppleMapsClient)(nil)`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go build ./... && go vet ./... && go test ./iowrappers/ -run TestApple -v`
 Expected: PASS, all four tests including every subtest.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add iowrappers/apple_maps_client.go iowrappers/apple_maps_client_test.go iowrappers/interfaces_test.go
@@ -638,7 +638,7 @@ git commit -m "feat(iowrappers): Apple Maps geocoding adapter"
 - Consumes: `RedisClient`.
 - Produces: `NewQuotaCounter(redisClient *RedisClient, cfg QuotaConfig) *QuotaCounter`; `QuotaConfig{DailyLimit int; Threshold float64; ExternalAllowance int}`; methods `(*QuotaCounter).OverThreshold(ctx context.Context) bool` and `(*QuotaCounter).Transport(base http.RoundTripper) http.RoundTripper`; exported `AppleDailyCallQuota = 25000`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `test/redis_client_mocks/apple_quota_test.go`:
 
@@ -772,12 +772,12 @@ func TestQuotaCounterKeyExpires(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./test/redis_client_mocks/ -run TestQuota -v`
 Expected: FAIL — `undefined: iowrappers.NewQuotaCounter`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `iowrappers/apple_quota.go`:
 
@@ -895,12 +895,12 @@ func (q *QuotaCounter) Transport(base http.RoundTripper) http.RoundTripper {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go build ./... && go vet ./... && go test ./test/redis_client_mocks/ -run TestQuota -v`
 Expected: PASS, all four tests including every threshold subtest.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add iowrappers/apple_quota.go test/redis_client_mocks/apple_quota_test.go
@@ -919,7 +919,7 @@ git commit -m "feat(iowrappers): Apple Maps daily quota counter"
 - Consumes: `Geocoder`, `SearchClient` (Task 1), `QuotaCounter` (Task 4), and the `stubSearchClient` test double defined in `iowrappers/poi_searcher_seam_test.go` (Task 2) — same package, so it is reused rather than redeclared.
 - Produces: `NewAppleGeocodeRouter(apple Geocoder, google SearchClient, quota *QuotaCounter) *AppleGeocodeRouter`, satisfying `SearchClient`. The `stubGeocoder` test double defined here is reused by Task 6.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `iowrappers/apple_geocode_router_test.go`:
 
@@ -1043,12 +1043,12 @@ func TestRouterNeverSendsNearbySearchToApple(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./iowrappers/ -run TestRouter -v`
 Expected: FAIL — `undefined: NewAppleGeocodeRouter`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Create `iowrappers/apple_geocode_router.go`:
 
@@ -1141,12 +1141,12 @@ func (r *AppleGeocodeRouter) NearbySearch(ctx context.Context, request *PlaceSea
 
 Add `_ SearchClient = (*AppleGeocodeRouter)(nil)` to `iowrappers/interfaces_test.go`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go build ./... && go vet ./... && go test ./iowrappers/ -run TestRouter -v`
 Expected: PASS, all three tests including every fallback subtest.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add iowrappers/apple_geocode_router.go iowrappers/apple_geocode_router_test.go iowrappers/interfaces_test.go
@@ -1166,7 +1166,7 @@ git commit -m "feat(iowrappers): route geocoding to Apple with Google fallback"
 - Consumes: everything above, plus two test doubles already in the package — `stubSearchClient` from Task 2 and `appleTestKey` from Task 3's test file.
 - Produces: `AppleMapsSettings{Enabled bool; TeamID, KeyID, PrivateKey string; QuotaThreshold float64; ExternalAllowance int}`; `(*PoiSearcher).EnableAppleMaps(settings AppleMapsSettings) error`; `planner.MyPlanner.Init` gains a final `appleMaps iowrappers.AppleMapsSettings` parameter.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `iowrappers/apple_wiring_test.go`:
 
@@ -1222,12 +1222,12 @@ func TestEnableAppleMapsWrapsTheSearcher(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `go test ./iowrappers/ -run TestEnableAppleMaps -v`
 Expected: FAIL — `undefined: AppleMapsSettings`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Append to `iowrappers/apple_geocode_router.go`:
 
@@ -1333,12 +1333,12 @@ immediately after `CreatePoiSearcher`:
 	}
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `go build ./... && go vet ./... && go test ./...`
 Expected: PASS. Confirm the default is off: `APPLE_MAPS_ENABLED` unset means `EnableAppleMaps` returns immediately and no router is constructed.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add main.go planner/planner.go iowrappers/apple_geocode_router.go iowrappers/apple_wiring_test.go
