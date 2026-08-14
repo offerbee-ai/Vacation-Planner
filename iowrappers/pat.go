@@ -21,18 +21,22 @@ type TokenRecord struct {
 	CreatedAt time.Time  `json:"created_at"`
 	ExpiresAt *time.Time `json:"expires_at"`
 	RevokedAt *time.Time `json:"revoked_at"`
+	// RenewInterval > 0 makes the token sliding: each authenticated use past the
+	// halfway mark pushes ExpiresAt to now+RenewInterval. 0 = fixed expiry (legacy).
+	RenewInterval time.Duration `json:"renew_interval,omitempty"`
 }
 
 // TokenMetadata contains non-sensitive token information for user management
 type TokenMetadata struct {
-	Id        string     `json:"id"`
-	Name      string     `json:"name"`
-	UserId    string     `json:"user_id"`
-	Scopes    []string   `json:"scopes"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt *time.Time `json:"expires_at"`
-	RevokedAt *time.Time `json:"revoked_at"`
-	IsActive  bool       `json:"is_active"`
+	Id            string        `json:"id"`
+	Name          string        `json:"name"`
+	UserId        string        `json:"user_id"`
+	Scopes        []string      `json:"scopes"`
+	CreatedAt     time.Time     `json:"created_at"`
+	ExpiresAt     *time.Time    `json:"expires_at"`
+	RevokedAt     *time.Time    `json:"revoked_at"`
+	IsActive      bool          `json:"is_active"`
+	RenewInterval time.Duration `json:"renew_interval,omitempty"`
 }
 
 // NewPATResponse contains the token information shown once during creation
@@ -88,18 +92,19 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%d years, %d days", years, remainingDays)
 }
 
-func (r *RedisClient) NewPAT(ctx context.Context, name, userId, token string, valid time.Duration) (*NewPATResponse, error) {
+func (r *RedisClient) NewPAT(ctx context.Context, name, userId, token string, valid, renewInterval time.Duration) (*NewPATResponse, error) {
 	now := time.Now()
 	expiresAt := now.Add(valid)
 	record := TokenRecord{
-		Id:        uuid.NewString(),
-		Name:      name,
-		Hash:      token,
-		UserId:    userId,
-		Scopes:    nil,
-		CreatedAt: now,
-		ExpiresAt: &expiresAt,
-		RevokedAt: nil,
+		Id:            uuid.NewString(),
+		Name:          name,
+		Hash:          token,
+		UserId:        userId,
+		Scopes:        nil,
+		CreatedAt:     now,
+		ExpiresAt:     &expiresAt,
+		RevokedAt:     nil,
+		RenewInterval: renewInterval,
 	}
 
 	tokenKey := strings.Join([]string{"pat", record.Id}, ":")
@@ -222,6 +227,50 @@ func (r *RedisClient) RevokePATByName(ctx context.Context, userId, tokenName str
 	return r.RevokePAT(ctx, userId, tokenId)
 }
 
+// slidePAT extends a sliding token's expiration to now+RenewInterval. Best-effort:
+// returns the new expiry on success, nil when the slide was skipped, lost a race,
+// or failed — authentication never depends on it. Runs under Watch on the token
+// record so a concurrent revoke always wins.
+func (r *RedisClient) slidePAT(ctx context.Context, tokenId string) *time.Time {
+	tokenKey := strings.Join([]string{"pat", tokenId}, ":")
+	var newExpiry *time.Time
+	err := r.Get().Watch(ctx, func(tx *redis.Tx) error {
+		val, err := tx.Get(ctx, tokenKey).Result()
+		if err != nil {
+			return err
+		}
+		var record TokenRecord
+		if err := json.Unmarshal([]byte(val), &record); err != nil {
+			return err
+		}
+		// Re-check under the watch: a concurrent revoke must win, and a
+		// non-sliding record must never be extended.
+		if record.RevokedAt != nil || record.RenewInterval <= 0 {
+			return nil
+		}
+		expiry := time.Now().Add(record.RenewInterval)
+		record.ExpiresAt = &expiry
+		save, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		_, err = tx.TxPipelined(ctx, func(pipe redis.Pipeliner) error {
+			return pipe.Set(ctx, tokenKey, string(save), 0).Err()
+		})
+		if err == nil {
+			newExpiry = &expiry
+		}
+		return err
+	}, tokenKey)
+	if err != nil {
+		if !errors.Is(err, redis.TxFailedErr) && !errors.Is(err, redis.Nil) {
+			Logger.Warnf("failed to slide PAT %s expiration: %v", tokenId, err)
+		}
+		return nil
+	}
+	return newExpiry
+}
+
 // validatePATInternal is a private method for internal validation (server-side auth)
 func (r *RedisClient) validatePATInternal(ctx context.Context, tokenId string) (*TokenRecord, error) {
 	tokenKey := strings.Join([]string{"pat", tokenId}, ":")
@@ -259,6 +308,13 @@ func (r *RedisClient) ValidatePATByHash(ctx context.Context, tokenHash string) (
 		return nil, redis.Nil // Token is expired or revoked
 	}
 
+	// Sliding renewal: past the halfway mark, push expiry forward. Best-effort.
+	if token.RenewInterval > 0 && time.Now().After(token.ExpiresAt.Add(-token.RenewInterval/2)) {
+		if newExpiry := r.slidePAT(ctx, token.Id); newExpiry != nil {
+			token.ExpiresAt = newExpiry
+		}
+	}
+
 	return token, nil
 }
 
@@ -283,14 +339,15 @@ func (r *RedisClient) ListUserPATMetadata(ctx context.Context, userId string) ([
 
 		// Convert to metadata (no hash exposed)
 		meta := &TokenMetadata{
-			Id:        token.Id,
-			Name:      token.Name,
-			UserId:    token.UserId,
-			Scopes:    token.Scopes,
-			CreatedAt: token.CreatedAt,
-			ExpiresAt: token.ExpiresAt,
-			RevokedAt: token.RevokedAt,
-			IsActive:  token.Valid(),
+			Id:            token.Id,
+			Name:          token.Name,
+			UserId:        token.UserId,
+			Scopes:        token.Scopes,
+			CreatedAt:     token.CreatedAt,
+			ExpiresAt:     token.ExpiresAt,
+			RevokedAt:     token.RevokedAt,
+			IsActive:      token.Valid(),
+			RenewInterval: token.RenewInterval,
 		}
 		metadata = append(metadata, meta)
 	}

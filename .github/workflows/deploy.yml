@@ -1,0 +1,110 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing image tag to (re)deploy; empty = build current SHA"
+        required: false
+
+# default token is read-only; only the deploy job is granted id-token for WIF
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/go.yml
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # the workflow never pushes git; don't leave the token in .git/config
+          persist-credentials: false
+
+      - name: Resolve and validate image tag
+        id: tag
+        env:
+          # pass untrusted input through the environment, never interpolate it
+          # into the script body — a value like $(cmd) would otherwise run
+          # before the regex check below
+          RAW_TAG: ${{ inputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          tag="${RAW_TAG:-$SHA}"
+          # tag flows into shell commands below and a docker reference; allow
+          # only the characters valid in a docker tag so it cannot inject.
+          if ! printf '%s' "$tag" | grep -Eq '^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$'; then
+            echo "refusing unsafe image tag: $tag" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Build and push image
+        if: inputs.tag == ''
+        env:
+          IMAGE: ${{ vars.GCP_IMAGE }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gcloud auth configure-docker us-west1-docker.pkg.dev --quiet
+          docker build -t "${IMAGE}:${TAG}" .
+          docker push "${IMAGE}:${TAG}"
+
+      - name: Deploy to VM over IAP
+        env:
+          ZONE: ${{ vars.GCP_ZONE }}
+          VM: ${{ vars.GCP_VM }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # OS Login key propagation is eventually consistent, so the first
+          # connections of a run intermittently fail with "Permission denied
+          # (publickey)". Retry only the transport-safe, idempotent steps
+          # (key warm-up and scp); run deploy.sh exactly once so a lost SSH
+          # response can never re-trigger a deployment.
+          retry() {
+            local n
+            for n in 1 2 3 4 5; do
+              "$@" && return 0
+              echo "attempt $n failed: $*; retrying in 10s" >&2
+              sleep 10
+            done
+            return 1
+          }
+          ssh_vm() {
+            gcloud compute ssh "$VM" --zone "$ZONE" --tunnel-through-iap "$@"
+          }
+
+          # scp lands the files in the deployer's home dir, which is also the
+          # working dir of every ssh --command below, so bare names resolve.
+          staged='docker-compose.prod.yml Caddyfile env.production deploy.sh'
+          # remove staged files on every exit path (success or failure), so a
+          # partial run never leaves them in the deployer's home directory
+          cleanup() { ssh_vm --command="rm -f $staged" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+
+          # warm up the OS Login key (idempotent) so the real steps do not race
+          retry ssh_vm --command='true'
+          retry gcloud compute scp deploy/docker-compose.prod.yml deploy/Caddyfile \
+            deploy/env.production deploy/deploy.sh \
+            "$VM":./ --zone "$ZONE" --tunnel-through-iap
+          # deployment itself runs once — not retried
+          ssh_vm --command="sudo cp $staged /opt/planner/ && sudo bash /opt/planner/deploy.sh ${TAG}"

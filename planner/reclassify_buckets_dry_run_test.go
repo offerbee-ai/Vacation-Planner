@@ -146,7 +146,7 @@ func newPATForLevel(t *testing.T, username, rawToken, level string) string {
 		t.Fatalf("failed to create %s test user: %v", level, err)
 	}
 	pat, err := redis_client_mocks.RedisClient.NewPAT(
-		redis_client_mocks.RedisContext, username+"-pat", userView.ID, rawToken, time.Hour,
+		redis_client_mocks.RedisContext, username+"-pat", userView.ID, rawToken, time.Hour, 0,
 	)
 	if err != nil {
 		t.Fatalf("failed to create test PAT: %v", err)

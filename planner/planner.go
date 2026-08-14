@@ -597,6 +597,12 @@ func (p *MyPlanner) searchPageHandler(ctx *gin.Context) {
 	ctx.HTML(http.StatusOK, "search_page.html", gin.H{})
 }
 
+// healthz answers container and deploy health probes. It is registered
+// before the rate-limiter middleware so probes never consume client budget.
+func (p *MyPlanner) healthz(c *gin.Context) {
+	c.String(http.StatusOK, "ok")
+}
+
 func (p *MyPlanner) homePageHandler(ctx *gin.Context) {
 	ctx.Redirect(http.StatusMovedPermanently, "/v1/")
 }
@@ -1689,6 +1695,7 @@ func (p *MyPlanner) rateLimiter() gin.HandlerFunc {
 type NewTokenInfo struct {
 	Name               string `json:"name"`
 	ExpirationDuration string `json:"expiration_duration,omitempty"` // Optional: e.g., "24h", "7d", "30d"
+	SlidingInterval    string `json:"sliding_interval,omitempty"`    // Optional: e.g., "720h"; token renews on use, 1h-8760h
 }
 
 type RevokeTokenInfo struct {
@@ -1716,9 +1723,26 @@ func (p *MyPlanner) createNewPAT(ctx *gin.Context) {
 		return
 	}
 
-	// Parse the expiration duration, default to 5 minutes if not provided or invalid
+	// Parse the expiration duration, default to 5 minutes if not provided
 	duration := time.Minute * 5 // Default duration
-	if t.ExpirationDuration != "" {
+	var renewInterval time.Duration
+	if t.SlidingInterval != "" && t.ExpirationDuration != "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "sliding_interval and expiration_duration are mutually exclusive"})
+		return
+	}
+	if t.SlidingInterval != "" {
+		parsedInterval, err := time.ParseDuration(t.SlidingInterval)
+		if err != nil {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid sliding interval format: %s. Use formats like '720h'", t.SlidingInterval)})
+			return
+		}
+		if parsedInterval < time.Hour || parsedInterval > 8760*time.Hour {
+			ctx.JSON(http.StatusBadRequest, gin.H{"error": "sliding_interval must be between 1h and 8760h"})
+			return
+		}
+		renewInterval = parsedInterval
+		duration = parsedInterval
+	} else if t.ExpirationDuration != "" {
 		if parsedDuration, err := time.ParseDuration(t.ExpirationDuration); err == nil {
 			duration = parsedDuration
 		} else {
@@ -1728,7 +1752,7 @@ func (p *MyPlanner) createNewPAT(ctx *gin.Context) {
 	}
 
 	token := uuid.NewString()
-	resp, err := p.RedisClient.NewPAT(ctx, t.Name, userId, token, duration)
+	resp, err := p.RedisClient.NewPAT(ctx, t.Name, userId, token, duration, renewInterval)
 
 	if err != nil {
 		if re.MatchString(err.Error()) {
@@ -1740,7 +1764,11 @@ func (p *MyPlanner) createNewPAT(ctx *gin.Context) {
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"name": resp.Name, "token": resp.TokenHash, "expiresAt": resp.ExpiresAt})
+	response := gin.H{"name": resp.Name, "token": resp.TokenHash, "expiresAt": resp.ExpiresAt}
+	if renewInterval > 0 {
+		response["renewInterval"] = renewInterval.String()
+	}
+	ctx.JSON(http.StatusOK, response)
 }
 
 func (p *MyPlanner) RevokePAT(ctx *gin.Context) {
@@ -1768,9 +1796,10 @@ func (p *MyPlanner) RevokePAT(ctx *gin.Context) {
 }
 
 type PATView struct {
-	Name      string `json:"name"`
-	Id        string `json:"id"`
-	ExpiresAt string `json:"expiresAt"`
+	Name          string `json:"name"`
+	Id            string `json:"id"`
+	ExpiresAt     string `json:"expiresAt"`
+	RenewInterval string `json:"renewInterval,omitempty"`
 }
 
 func (p *MyPlanner) ListPATs(ctx *gin.Context) {
@@ -1796,6 +1825,34 @@ func (p *MyPlanner) ListPATs(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"pats": tokens})
 }
 
+// getTokenInfo returns metadata for the PAT presented in the Authorization
+// header. PAT-only introspection: validating the token also renews a sliding
+// token, so this endpoint doubles as a keep-alive for idle integrations.
+func (p *MyPlanner) getTokenInfo(ctx *gin.Context) {
+	authHeader := ctx.Request.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "missing bearer token"})
+		return
+	}
+	tokenHash := strings.TrimPrefix(authHeader, "Bearer ")
+
+	record, err := p.RedisClient.ValidatePATByHash(ctx, tokenHash)
+	if err != nil {
+		ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired access token"})
+		return
+	}
+
+	resp := gin.H{
+		"name":      record.Name,
+		"expiresAt": record.ExpiresAt.Format(time.RFC3339),
+		"valid":     true,
+	}
+	if record.RenewInterval > 0 {
+		resp["renewInterval"] = record.RenewInterval.String()
+	}
+	ctx.JSON(http.StatusOK, resp)
+}
+
 func (p *MyPlanner) SetupRouter(serverPort string) *http.Server {
 	gin.SetMode(gin.ReleaseMode)
 	if p.Environment == "debug" {
@@ -1819,6 +1876,9 @@ func (p *MyPlanner) SetupRouter(serverPort string) *http.Server {
 	// TODO: change to front-end domain once front-end server is deployed
 	myRouter.ForwardedByClientIP = true
 	myRouter.Use(cors.Default())
+
+	// registered before the rate limiter: health probes are exempt from it
+	myRouter.GET("/healthz", p.healthz)
 
 	// Only apply rate limiting in non-development environments
 	if p.Environment != DevelopmentEnvironment {
@@ -1859,6 +1919,7 @@ func (p *MyPlanner) SetupRouter(serverPort string) *http.Server {
 		v1.POST("/create-token", p.createNewPAT)
 		v1.DELETE("/revoke-token", p.RevokePAT)
 		v1.GET("/list-tokens", p.ListPATs)
+		v1.GET("/token", p.getTokenInfo)
 		migrations := v1.Group("/migrate")
 		{
 			migrations.GET("/user-ratings-total", p.UserRatingsTotalMigrationHandler)
