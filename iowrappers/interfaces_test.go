@@ -7,4 +7,6 @@ var (
 	_ Geocoder           = (*MapsClient)(nil)
 	_ SearchClient       = (*MapsClient)(nil)
 	_ PlaceDetailsClient = (*MapsClient)(nil)
+
+	_ Geocoder = (*AppleMapsClient)(nil)
 )
