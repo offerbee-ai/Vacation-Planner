@@ -1321,7 +1321,12 @@ func (p *MyPlanner) getNearbyPlaces(ctx *gin.Context) {
 				Location:        location,
 				Radius:          radius,
 				MinNumResults:   uint(limit),
-				DetailsLimit:    limit,
+				// The notification path shows a handful of stores per brand, so
+				// Details (the dominant cost, one call per new place) is capped
+				// below the candidate pool. Without this, a widened limit (40)
+				// across a 25-brand request could buy up to 1000 Details calls
+				// on a cold cell.
+				DetailsLimit: min(limit, 10),
 			}
 			result := nearbyPlacesBrandResult{Brand: keyword, Places: []POI.Place{}}
 			places, searchErr := p.Solver.Searcher.NearbySearch(searchContext, searchReq)

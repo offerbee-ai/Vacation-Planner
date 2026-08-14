@@ -14,10 +14,13 @@ import (
 //     path (both already arrive free with every Nearby/Text Search result), and
 //     user_ratings_total alone pulls the call into the Atmosphere tier. The AddUserRatingsTotal
 //     admin migration passes its own single-field list and is unaffected.
+//   - editorial_summary and photos must stay OUT (dropped 2026-08-13): nothing on the OfferBee
+//     wire reads Summary or Photo, and editorial_summary is the lone Atmosphere-tier field, so
+//     its absence drops every Details call one SKU tier. Photo backfill on place-search confirm
+//     becomes a no-op, which nothing consumes.
 //   - the remaining fields are load-bearing: opening_hours (open-now filtering),
 //     formatted_address/adr_address (display + address parsing), url (also the Details-freshness
-//     signal — see iowrappers/data_migrations.go detailsSourcedFields), editorial_summary (trip
-//     planner), photos (place photos + confirm gap-fill).
+//     signal — see iowrappers/data_migrations.go detailsSourcedFields).
 func TestDetailedSearchFieldsMask(t *testing.T) {
 	raw, err := os.ReadFile("config/config.yml")
 	if err != nil {
@@ -33,12 +36,12 @@ func TestDetailedSearchFieldsMask(t *testing.T) {
 		fields[f] = true
 	}
 
-	for _, banned := range []string{"name", "user_ratings_total"} {
+	for _, banned := range []string{"name", "user_ratings_total", "editorial_summary", "photos"} {
 		if fields[banned] {
 			t.Errorf("detailed_search_fields contains %q, which no Details consumer reads — it only adds billing tier", banned)
 		}
 	}
-	for _, required := range []string{"opening_hours", "formatted_address", "adr_address", "url", "editorial_summary", "photos"} {
+	for _, required := range []string{"opening_hours", "formatted_address", "adr_address", "url"} {
 		if !fields[required] {
 			t.Errorf("detailed_search_fields is missing load-bearing field %q", required)
 		}

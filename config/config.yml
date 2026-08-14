@@ -4,13 +4,15 @@ server:
     # TestDetailedSearchFieldsMask for why name and user_ratings_total are
     # deliberately absent (nothing reads them from a Details response; both
     # arrive free with every Nearby/Text Search result).
+    # editorial_summary and photos were dropped 2026-08-13: nothing on the
+    # OfferBee wire (nearby-places, nearby-places-by-category, place-search,
+    # confirm) reads Summary or Photo, and editorial_summary is the lone
+    # Atmosphere-tier field — removing it drops every Details call one SKU tier.
     detailed_search_fields:
       - opening_hours
       - formatted_address
       - adr_address
       - url
-      - editorial_summary
-      - photos
   plan_solver:
     same_place_dedupe_count_limit: 2
     nearby_cities_count_limit: 3
