@@ -24,7 +24,7 @@ func TestParseTextSearchResponse_SkipsEmptyPlaceID(t *testing.T) {
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1", len(places))
 	}
@@ -42,7 +42,7 @@ func TestParseTextSearchResponse_SkipsZeroGeometry(t *testing.T) {
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1", len(places))
 	}
@@ -61,7 +61,7 @@ func TestParseTextSearchResponse_DedupesByPlaceID(t *testing.T) {
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1 (dedupe by PlaceID failed)", len(places))
 	}
@@ -86,7 +86,7 @@ func TestParseTextSearchResponse_KeepsZeroRatings(t *testing.T) {
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1 (zero-rating place must be kept)", len(places))
 	}
@@ -108,7 +108,7 @@ func TestParseTextSearchResponse_BlankStatusBecomesOperational(t *testing.T) {
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1", len(places))
 	}
@@ -136,7 +136,7 @@ func TestParseTextSearchResponse_SkipsClosedPermanently(t *testing.T) {
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1", len(places))
 	}
@@ -157,7 +157,7 @@ func TestParseTextSearchResponse_TruncatesToDefaultMax(t *testing.T) {
 	}
 	resp := maps.PlacesSearchResponse{Results: results}
 
-	places := parseTextSearchResponse(resp, 0) // limit <= 0 -> PlaceTextSearchMaxResults
+	places := parseTextSearchResponse(resp, &TextSearchRequest{}) // limit <= 0 -> PlaceTextSearchMaxResults
 	if len(places) != PlaceTextSearchMaxResults {
 		t.Fatalf("got %d places, want %d (limit<=0 must fall back to PlaceTextSearchMaxResults)", len(places), PlaceTextSearchMaxResults)
 	}
@@ -175,7 +175,7 @@ func TestParseTextSearchResponse_TruncatesToRequestedLimit(t *testing.T) {
 	}
 	resp := maps.PlacesSearchResponse{Results: results}
 
-	places := parseTextSearchResponse(resp, 5)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{Limit: 5})
 	if len(places) != 5 {
 		t.Fatalf("got %d places, want 5", len(places))
 	}
@@ -193,7 +193,7 @@ func TestParseTextSearchResponse_LimitAboveMaxStillCapsAtMax(t *testing.T) {
 	}
 	resp := maps.PlacesSearchResponse{Results: results}
 
-	places := parseTextSearchResponse(resp, PlaceTextSearchMaxResults+100)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{Limit: PlaceTextSearchMaxResults + 100})
 	if len(places) != PlaceTextSearchMaxResults {
 		t.Fatalf("got %d places, want %d (a limit above the max must still cap at the max)", len(places), PlaceTextSearchMaxResults)
 	}
@@ -216,7 +216,7 @@ func TestParseTextSearchResponse_PreservesTypesAndSetsLocationTypeToPrimary(t *t
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1", len(places))
 	}
@@ -249,7 +249,7 @@ func TestParseTextSearchResponse_NoRealOpeningHours(t *testing.T) {
 		},
 	}
 
-	places := parseTextSearchResponse(resp, 0)
+	places := parseTextSearchResponse(resp, &TextSearchRequest{})
 	if len(places) != 1 {
 		t.Fatalf("got %d places, want 1", len(places))
 	}
@@ -348,4 +348,137 @@ func keysOf(m map[string]json.RawMessage) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// ── Distance bound ──────────────────────────────────────────────────────────
+// Legacy Text Search treats location+radius as a ranking bias, not a
+// restriction. Measured against this service: "Fry's Food and Drug" from San
+// Francisco with radius=8000 returned ten Phoenix and Tucson stores, and
+// radius=500 returned the same twenty rows as radius=16000. The coordinates
+// below are from that run.
+
+var (
+	sanFrancisco = POI.Location{Latitude: 37.7749, Longitude: -122.4194}
+	phoenix      = maps.LatLng{Lat: 33.4805, Lng: -111.9905} // ~1054 km
+	tucson       = maps.LatLng{Lat: 32.2517, Lng: -110.9631} // ~1209 km
+	sanJose      = maps.LatLng{Lat: 37.3382, Lng: -121.8863} // ~68 km
+	oakland      = maps.LatLng{Lat: 37.8044, Lng: -122.2712} // ~13 km
+)
+
+func placeResult(id, name string, loc maps.LatLng) maps.PlacesSearchResult {
+	return maps.PlacesSearchResult{
+		PlaceID:  id,
+		Name:     name,
+		Geometry: maps.AddressGeometry{Location: loc},
+		Types:    []string{"supermarket"},
+	}
+}
+
+func TestParseTextSearchResponse_DropsResultsBeyondRadius(t *testing.T) {
+	mustLogger(t)
+	resp := maps.PlacesSearchResponse{
+		Results: []maps.PlacesSearchResult{
+			placeResult("phx", "Fry's", phoenix),
+			placeResult("tus", "Fry's", tucson),
+			placeResult("sj", "Costco", sanJose),
+		},
+	}
+
+	places := parseTextSearchResponse(resp, &TextSearchRequest{
+		Location: sanFrancisco,
+		Radius:   PlaceTextSearchDefaultRadius,
+	})
+
+	if len(places) != 1 {
+		t.Fatalf("got %d places, want 1 (the in-state one)", len(places))
+	}
+	if places[0].ID != "sj" {
+		t.Fatalf("kept %q, want the San Jose result", places[0].ID)
+	}
+}
+
+// The bound has to be wider than the nearby radius or it deletes legitimate
+// cross-metro answers: San Jose is ~68 km from San Francisco.
+func TestParseTextSearchResponse_KeepsCrossMetroResult(t *testing.T) {
+	mustLogger(t)
+	resp := maps.PlacesSearchResponse{
+		Results: []maps.PlacesSearchResult{placeResult("sj", "Costco", sanJose)},
+	}
+
+	if got := parseTextSearchResponse(resp, &TextSearchRequest{
+		Location: sanFrancisco,
+		Radius:   PlaceTextSearchDefaultRadius,
+	}); len(got) != 1 {
+		t.Fatalf("got %d places at the text-search bound, want 1", len(got))
+	}
+	if got := parseTextSearchResponse(resp, &TextSearchRequest{
+		Location: sanFrancisco,
+		Radius:   MaxSearchRadius, // the NEARBY cap — too tight for a named search
+	}); len(got) != 0 {
+		t.Fatalf("got %d places at the nearby radius, want 0", len(got))
+	}
+}
+
+// The whole point of filtering before truncating: a local match Google ranked
+// below the limit must survive, and the far ones it ranked first must not.
+func TestParseTextSearchResponse_BoundsBeforeTruncating(t *testing.T) {
+	mustLogger(t)
+	results := []maps.PlacesSearchResult{
+		placeResult("phx", "Fry's", phoenix),
+		placeResult("tus", "Fry's", tucson),
+		placeResult("oak", "Local", oakland),
+	}
+
+	places := parseTextSearchResponse(resp2(results), &TextSearchRequest{
+		Location: sanFrancisco,
+		Radius:   PlaceTextSearchDefaultRadius,
+		Limit:    2, // truncating first would have kept Phoenix and Tucson
+	})
+
+	if len(places) != 1 || places[0].ID != "oak" {
+		t.Fatalf("got %v, want just the Oakland result", ids(places))
+	}
+}
+
+func TestParseTextSearchResponse_SortsSurvivorsNearestFirst(t *testing.T) {
+	mustLogger(t)
+	// Given in Google's prominence order, farthest first.
+	places := parseTextSearchResponse(resp2([]maps.PlacesSearchResult{
+		placeResult("sj", "Costco", sanJose),
+		placeResult("oak", "Costco", oakland),
+	}), &TextSearchRequest{Location: sanFrancisco, Radius: PlaceTextSearchDefaultRadius})
+
+	if got := ids(places); len(got) != 2 || got[0] != "oak" || got[1] != "sj" {
+		t.Fatalf("got %v, want [oak sj] nearest-first", got)
+	}
+}
+
+// A zero origin is the Gulf of Guinea; filtering against it would drop
+// everything. The HTTP handler rejects a zero location, so this covers direct
+// callers and every existing test in this file.
+func TestParseTextSearchResponse_NoBoundWithoutOriginOrRadius(t *testing.T) {
+	mustLogger(t)
+	results := []maps.PlacesSearchResult{
+		placeResult("phx", "Fry's", phoenix),
+		placeResult("sj", "Costco", sanJose),
+	}
+
+	if got := parseTextSearchResponse(resp2(results), &TextSearchRequest{Radius: 1000}); len(got) != 2 {
+		t.Fatalf("zero origin: got %d places, want both unfiltered", len(got))
+	}
+	if got := parseTextSearchResponse(resp2(results), &TextSearchRequest{Location: sanFrancisco}); len(got) != 2 {
+		t.Fatalf("zero radius: got %d places, want both unfiltered", len(got))
+	}
+}
+
+func resp2(results []maps.PlacesSearchResult) maps.PlacesSearchResponse {
+	return maps.PlacesSearchResponse{Results: results}
+}
+
+func ids(places []POI.Place) []string {
+	out := make([]string, 0, len(places))
+	for _, p := range places {
+		out = append(out, p.ID)
+	}
+	return out
 }

@@ -1503,9 +1503,12 @@ type placeTextSearchRequest struct {
 // searchPlacesByText runs a free-text Google Places search around a coordinate and returns every
 // result as a confirmable candidate. Requires authentication (PAT Bearer header or JWT cookie):
 // each request buys a billed Google Text Search call, so the endpoint must not be open. Location
-// is required (same zero-location rejection getNearbyPlaces/getNearbyPlacesByCategory apply)
-// because an unbiased text query like "konjoe" can resolve to the wrong continent without a
-// coordinate to anchor it.
+// is required (same zero-location rejection getNearbyPlaces/getNearbyPlacesByCategory apply) for
+// two separate reasons, and conflating them is what once let a San Francisco search return
+// Phoenix stores: the coordinate BIASES Google's ranking, so an unanchored query like "konjoe"
+// can resolve to the wrong continent — and, separately, it is the origin the response is BOUNDED
+// against afterwards. Anchoring alone does not bound; legacy Text Search is explicit that
+// prominent results outside the radius may still be returned.
 func (p *MyPlanner) searchPlacesByText(ctx *gin.Context) {
 	_, authenticationErr := p.UserAuthentication(ctx, user.LevelRegular)
 	if authenticationErr != nil {
@@ -1523,9 +1526,14 @@ func (p *MyPlanner) searchPlacesByText(ctx *gin.Context) {
 		return
 	}
 
+	// MaxSearchRadius is the NEARBY cap — the ceiling on the Redis widening loop. Text search
+	// has its own bound, and a different meaning for the word: here `radius` is how far a named
+	// place may be, enforced after Google answers (see parseTextSearchResponse). Absent or 0
+	// bounds at the default rather than going unbounded, because unbounded is the bug the
+	// constant exists for; there is deliberately no opt-out.
 	radius := req.Radius
-	if radius == 0 || radius > iowrappers.MaxSearchRadius {
-		radius = iowrappers.MaxSearchRadius
+	if radius == 0 || radius > iowrappers.PlaceTextSearchDefaultRadius {
+		radius = iowrappers.PlaceTextSearchDefaultRadius
 	}
 	limit := req.Limit
 	if limit <= 0 {
