@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/weihesdlegend/Vacation-planner/POI"
+	"github.com/weihesdlegend/Vacation-planner/utils"
 	"googlemaps.github.io/maps"
 )
 
@@ -28,6 +29,20 @@ const (
 	// PlaceTextSearchMaxResults is one legacy Text Search page; the legacy API does not support
 	// paging through more without a page token round trip, which this feature does not need.
 	PlaceTextSearchMaxResults = 20
+	// PlaceTextSearchDefaultRadius bounds how far a text-search result may be from the caller's
+	// location. Legacy Text Search treats location+radius as a ranking BIAS, not a restriction —
+	// the Maps SDK says so outright: "prominent results from outside of the search radius may be
+	// included". Measured against this service: "Fry's Food and Drug" from San Francisco with
+	// radius=8000 returned ten Phoenix and Tucson stores, 920-1212km away, and radius=500 returned
+	// the same twenty rows as radius=16000. So the bound has to be applied to the response.
+	// 80km covers a whole US metro (SF to San Jose is ~68km); the nearest wrong-state result
+	// measured was 804km.
+	PlaceTextSearchDefaultRadius = 80000
+	// PlaceTextSearchBiasRadius is what Google actually receives. A TIGHT bias is the only lever
+	// that pulls local matches into the single 20-result page, so it stays small even when the
+	// caller asks for a wider bound. Do NOT raise this to match the bound: a wider bias can only
+	// push local results out of the page that the distance filter then has to work with.
+	PlaceTextSearchBiasRadius = 8000
 )
 
 var (
@@ -84,13 +99,21 @@ func (c *MapsClient) TextSearchPlaces(ctx context.Context, req *TextSearchReques
 	ctx, cancel := context.WithTimeout(ctx, GoogleMapsSearchTimeout)
 	defer cancel()
 
+	// The caller's radius is a BOUND (enforced in parseTextSearchResponse); what Google receives
+	// is a narrower BIAS. Sending the bound here would widen the bias and push local matches out
+	// of the one page Google returns — the opposite of what the caller asked for.
+	bias := uint(PlaceTextSearchBiasRadius)
+	if req.Radius > 0 && req.Radius < bias {
+		bias = req.Radius
+	}
+
 	mapsReq := &maps.TextSearchRequest{
 		Query: req.Query,
 		Location: &maps.LatLng{
 			Lat: req.Location.Latitude,
 			Lng: req.Location.Longitude,
 		},
-		Radius: req.Radius,
+		Radius: bias,
 	}
 
 	// Acquire semaphore for API rate limiting, mirroring Geocode/ReverseGeocode above.
@@ -102,7 +125,7 @@ func (c *MapsClient) TextSearchPlaces(ctx context.Context, req *TextSearchReques
 		return nil, err
 	}
 
-	return parseTextSearchResponse(resp, req.Limit), nil
+	return parseTextSearchResponse(resp, req), nil
 }
 
 // parseTextSearchResponse converts a Text Search response into POI.Place values. Pure and
@@ -112,18 +135,20 @@ func (c *MapsClient) TextSearchPlaces(ctx context.Context, req *TextSearchReques
 // Deliberately does NOT filter UserRatingsTotal == 0, unlike parsePlacesSearchResponse (nearby
 // search). That filter drops exactly the new-and-obscure places this feature exists to let a user
 // add by name.
-func parseTextSearchResponse(resp maps.PlacesSearchResponse, limit int) []POI.Place {
+func parseTextSearchResponse(resp maps.PlacesSearchResponse, req *TextSearchRequest) []POI.Place {
 	effectiveLimit := PlaceTextSearchMaxResults
-	if limit > 0 && limit < PlaceTextSearchMaxResults {
-		effectiveLimit = limit
+	if req != nil && req.Limit > 0 && req.Limit < PlaceTextSearchMaxResults {
+		effectiveLimit = req.Limit
 	}
 
 	seen := make(map[string]bool, len(resp.Results))
 	places := make([]POI.Place, 0, len(resp.Results))
 	for _, res := range resp.Results {
-		if len(places) >= effectiveLimit {
-			break
-		}
+		// Deliberately NOT truncated here. The limit is applied after the distance bound below,
+		// because cutting to the limit first would leave the bound with only Google's most
+		// prominent rows — the exact rows that can be a thousand kilometres away — and discard
+		// the local matches it ranked 11th to 20th. One page is at most 20 places, so parsing
+		// all of it costs nothing.
 		if res.PlaceID == "" {
 			continue
 		}
@@ -167,6 +192,29 @@ func parseTextSearchResponse(resp maps.PlacesSearchResponse, limit int) []POI.Pl
 		// the place by its primary function rather than by the free-text query that found it.
 		place.Types = res.Types
 		places = append(places, place)
+	}
+
+	// The bound Google would not apply. Skipped when there is no radius or no origin: (0,0) is
+	// in the Gulf of Guinea, so filtering against it would drop every real place. The HTTP
+	// handler already rejects a zero location, so this gate only covers direct callers and tests.
+	hasOrigin := req != nil && (req.Location.Latitude != 0 || req.Location.Longitude != 0)
+	if req != nil && req.Radius > 0 && hasOrigin {
+		origin := []float64{req.Location.Latitude, req.Location.Longitude}
+		bounded := places[:0]
+		for _, place := range places {
+			loc := place.GetLocation()
+			if utils.HaversineDist(origin, []float64{loc.Latitude, loc.Longitude}) <= float64(req.Radius) {
+				bounded = append(bounded, place)
+			}
+		}
+		places = bounded
+		// Nearest-first before truncating, for the reason SortPlacesByDistance documents: a
+		// prominence-ordered slice[:limit] can rank a distant result above a close one.
+		SortPlacesByDistance(places, req.Location.Latitude, req.Location.Longitude)
+	}
+
+	if len(places) > effectiveLimit {
+		places = places[:effectiveLimit]
 	}
 	return places
 }
